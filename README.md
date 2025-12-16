@@ -1,112 +1,223 @@
-# Data Science Project Boilerplate
+# 📈 Bitcoin Price Prediction Using Market Sentiment and Time Series Models
 
-This boilerplate is designed to kickstart data science projects by providing a basic setup for database connections, data processing, and machine learning model development. It includes a structured folder organization for your datasets and a set of pre-defined Python packages necessary for most data science tasks.
+## 1. Project Overview
 
-## Structure
+This project aims to build a **predictive system for Bitcoin price movements** by combining:
 
-The project is organized as follows:
+- **Market sentiment analysis** derived from news and thematic keywords
+- **Time series forecasting** based solely on historical price data
 
-- **`src/app.py`** → Main Python script where your project will run.
-- **`src/explore.ipynb`** → Notebook for exploration and testing. Once exploration is complete, migrate the clean code to `app.py`.
-- **`src/utils.py`** → Auxiliary functions, such as database connection.
-- **`requirements.txt`** → List of required Python packages.
-- **`models/`** → Will contain your SQLAlchemy model classes.
-- **`data/`** → Stores datasets at different stages:
-  - **`data/raw/`** → Raw data.
-  - **`data/interim/`** → Temporarily transformed data.
-  - **`data/processed/`** → Data ready for analysis.
+The core idea is to **compare, complement, and validate** different modeling paradigms in order to better understand:
+- the intrinsic dynamics of Bitcoin price
+- the added value of market sentiment information
 
+Two main models are developed:
+1. A **supervised regression model** using sentiment-based features
+2. A **time series model (ARIMA / SARIMA)** using historical Bitcoin prices
 
-## ⚡ Initial Setup in Codespaces (Recommended)
+---
 
-No manual setup is required, as **Codespaces is automatically configured** with the predefined files created by the academy for you. Just follow these steps:
+## 2. Bitcoin as a Financial Asset: Theoretical Context
 
-1. **Wait for the environment to configure automatically**.
-   - All necessary packages and the database will install themselves.
-   - The automatically created `username` and `db_name` are in the **`.env`** file at the root of the project.
-2. **Once Codespaces is ready, you can start working immediately**.
+Bitcoin is a **decentralized digital asset** designed to operate without a central authority. Unlike traditional fiat currencies, Bitcoin follows a **strict and transparent monetary policy**, enforced by its protocol.
 
+### 2.1 Key Characteristics of Bitcoin
 
-## 💻 Local Setup (Only if you can't use Codespaces)
+- Maximum supply capped at **21 million BTC**
+- New bitcoins are introduced through **mining**
+- Mining rewards are reduced approximately every four years in events known as **halvings**
+- The network is **decentralized**, maintained by distributed nodes and miners
 
-**Prerequisites**
+This controlled supply model contrasts sharply with fiat currencies, where supply is regulated by central banks.
 
-Make sure you have Python 3.11+ installed on your machine. You will also need pip to install the Python packages.
+---
 
-**Installation**
+### 2.2 Market Cycles: Halving, Bull Markets, and Crypto Winters
 
-Clone the project repository to your local machine.
+Historically, Bitcoin has exhibited long-term cycles influenced by:
+- **Halving events** (supply shocks)
+- Speculative adoption phases
+- Prolonged bearish periods commonly referred to as **crypto winters**
 
-Navigate to the project directory and install the required Python packages:
+These cycles introduce:
+- strong non-stationarity
+- regime changes
+- extreme volatility
 
-```bash
-pip install -r requirements.txt
-```
+As a result, Bitcoin price modeling is particularly challenging and benefits from **multiple modeling perspectives**.
 
-**Create a database (if necessary)**
+---
 
-Create a new database within the Postgres engine by customizing and executing the following command:
+## 3. Dataset Design and Temporal Logic
 
-```bash
-$ psql -U postgres -c "DO \$\$ BEGIN 
-    CREATE USER my_user WITH PASSWORD 'my_password'; 
-    CREATE DATABASE my_database OWNER my_user; 
-END \$\$;"
-```
-Connect to the Postgres engine to use your database, manipulate tables, and data:
+### 3.1 Granularity
 
-```bash
-$ psql -U my_user -d my_database
-```
+- The dataset has an **hourly granularity**
+- Each row represents **one hour of data**
+- This resolution offers a balance between:
+  - capturing short-term dynamics
+  - controlling noise
+  - computational feasibility
 
-Once inside PSQL, you can create tables, run queries, insert, update, or delete data, and much more!
+---
 
-**Environment Variables**
+### 3.2 Feature Engineering and Temporal Alignment
 
-Create a .env file in the root directory of the project to store your environment variables, such as your database connection string:
+A critical design decision in this project is the **temporal shift applied to sentiment features**:
 
-```makefile
-DATABASE_URL="postgresql://<USER>:<PASSWORD>@<HOST>:<PORT>/<DB_NAME>"
+- **Sentiment features are computed at time _t-1_**
+- **Bitcoin price (target variable) is defined at time _t_**
 
-#example
-DATABASE_URL="postgresql://my_user:my_password@localhost:5432/my_database"
-```
+This ensures:
+- no data leakage
+- realistic production conditions
+- causal consistency
 
-## Running the Application
+In a real deployment scenario, this allows the system to:
+> use news and sentiment from the last hour to predict the Bitcoin price for the next hour.
 
-To run the application, execute the app.py script from the root directory of the project:
+---
 
-```bash
-python src/app.py
-```
+## 4. Model 1: Supervised Regression with Sentiment Features
 
-## Adding Models
+### 4.1 Objective
 
-To add SQLAlchemy model classes, create new Python script files within the models/ directory. These classes should be defined according to your database schema.
+The supervised learning model aims to answer the following question:
 
-Example model definition (`models/example_model.py`):
+> *Does aggregated market sentiment help explain and predict short-term Bitcoin price movements?*
 
-```py
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import String
-from sqlalchemy.orm import Mapped, mapped_column
+---
 
-Base = declarative_base()
+### 4.2 Input Features
 
-class ExampleModel(Base):
-    __tablename__ = 'example_table'
-    id: Mapped[int] = mapped_column(primary_key=True)
-    username: Mapped[str] = mapped_column(unique=True)
-```
+Typical input features include:
+- sentiment scores associated with specific keywords or topics
+- aggregated sentiment indicators per hour
+- lagged Bitcoin prices (e.g. price at time _t-1_)
 
-## Working with Data
+Including lagged prices allows the model to capture:
+- short-term momentum
+- market inertia effects
 
-You can place your raw datasets in the data/raw directory, intermediate datasets in data/interim, and processed datasets ready for analysis in data/processed.
+---
 
-To process data, you can modify the app.py script to include your data processing steps, using pandas for data manipulation and analysis.
+### 4.3 Target Variable
 
-## Contributors
+- Bitcoin price at time _t_
+- Future extensions may explore log-returns instead of raw prices
 
-This template was built as part of the [Data Science and Machine Learning Bootcamp](https://4geeksacademy.com/us/coding-bootcamps/datascience-machine-learning) by 4Geeks Academy by [Alejandro Sanchez](https://twitter.com/alesanchezr) and many other contributors. Learn more about [4Geeks Academy BootCamp programs](https://4geeksacademy.com/us/programs) here.
+---
 
-Other templates and resources like this can be found on the school's GitHub page.
+### 4.4 Modeling Approach
+
+This problem is treated as a **tabular regression task**, enabling the use of:
+- linear regression as a baseline
+- tree-based regression models
+- regularized regression techniques
+
+Model performance is evaluated using standard regression metrics.
+
+---
+
+## 5. Model 2: Time Series Forecasting (ARIMA / SARIMA)
+
+### 5.1 Motivation
+
+The time series model serves as a **price-only baseline**, independent of sentiment data.
+
+It answers the question:
+> *How well can Bitcoin price be predicted using only its own historical behavior?*
+
+---
+
+### 5.2 ARIMA as Baseline Model
+
+ARIMA (AutoRegressive Integrated Moving Average) models:
+- trends
+- short-term dependencies
+- autocorrelation structures
+
+ARIMA is selected as the **baseline time series model** because it is:
+- interpretable
+- widely used in financial forecasting
+- a strong reference point for comparison
+
+---
+
+### 5.3 Extending to SARIMA: Capturing Seasonality
+
+With hourly data, Bitcoin prices may exhibit:
+- **daily behavioral patterns (24-hour cycles)**
+- **weekly effects**
+
+SARIMA extends ARIMA by explicitly modeling **seasonal components**.
+
+However, Bitcoin does not exhibit rigid seasonality like traditional demand-driven assets. Therefore:
+- ARIMA is used first as a baseline
+- SARIMA is introduced only if it provides measurable improvements
+
+This approach helps:
+- limit overfitting
+- preserve interpretability
+- remain consistent with the stochastic nature of crypto markets
+
+---
+
+## 6. Model Comparison, Competition, and Complementarity
+
+Rather than selecting a single “best” model, the project explores multiple interaction strategies:
+
+### 6.1 Direct Competition
+
+- Forecasting accuracy is compared using metrics such as RMSE and MAE
+- Performance stability across different time periods is evaluated
+
+---
+
+### 6.2 Complementary Perspectives
+
+- Time series models capture intrinsic price dynamics
+- Sentiment-based models capture external market perception
+
+Together, they provide a more comprehensive understanding of Bitcoin price behavior.
+
+---
+
+### 6.3 Confirmation Logic (Conceptual)
+
+- If both models predict the same direction, confidence increases
+- Divergent predictions signal higher uncertainty
+
+This logic aligns with real-world decision-support systems.
+
+---
+
+## 7. Repository Structure and Collaboration
+
+The project uses a collaborative Git workflow with multiple branches:
+- `main`: stable integration branch
+- individual branches for each contributor
+
+This structure reflects best practices commonly used in professional data science projects.
+
+---
+
+## 8. Project Status and Future Work
+
+This repository represents an **early-stage version** of the project.
+
+Planned extensions include:
+- advanced feature engineering
+- regime-aware modeling
+- ensemble strategies
+- production-oriented pipelines
+
+---
+
+## 9. Final Remarks
+
+This project focuses not only on predictive accuracy, but also on:
+- understanding Bitcoin as an asset
+- respecting temporal causality
+- comparing modeling paradigms
+- designing solutions with real-world deployment in mind
