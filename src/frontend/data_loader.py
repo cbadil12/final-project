@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Tuple
 import pandas as pd
+from pathlib import Path
 
 
 @dataclass
@@ -174,3 +175,53 @@ def quick_sentiment_score(news_df: pd.DataFrame) -> Tuple[float, str, int, int]:
 
     label = 'Positivo' if score > 0.15 else 'Negativo' if score < -0.15 else 'Neutral'
     return float(score), label, int(pos_hits), int(neg_hits)
+
+
+def load_prediction_csv(path: str, pred_col_name: str) -> pd.DataFrame:
+    """
+    Loads a predictions CSV if it exists. Otherwise returns empty DF.
+    Normalizes timestamp and renames prediction column to pred_col_name.
+    Expected columns: timestamp + (y_pred/forecast/prediction/...) and optional y_true.
+    """
+    p = Path(path)
+    if not p.exists():
+        return pd.DataFrame()
+
+    df = pd.read_csv(p)
+
+    # Normalize timestamp column name
+    if "timestamp" not in df.columns:
+        for alt in ["date", "datetime", "time"]:
+            if alt in df.columns:
+                df = df.rename(columns={alt: "timestamp"})
+                break
+
+    if "timestamp" not in df.columns:
+        return pd.DataFrame()
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+
+    # Normalize common prediction column names
+    rename_map = {
+        "y_pred": pred_col_name,
+        "pred": pred_col_name,
+        "forecast": pred_col_name,
+        "prediction": pred_col_name,
+        "actual": "y_true",
+        "price": "y_true",
+        "y": "y_true",
+    }
+    for k, v in rename_map.items():
+        if k in df.columns and v not in df.columns:
+            df = df.rename(columns={k: v})
+
+    # If the prediction column still isn't present, give up safely
+    if pred_col_name not in df.columns:
+        return pd.DataFrame()
+
+    keep_cols = ["timestamp", pred_col_name]
+    if "y_true" in df.columns:
+        keep_cols.append("y_true")
+
+    return df[keep_cols]
