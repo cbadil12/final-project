@@ -39,9 +39,9 @@ The frontend is built around a single Streamlit dashboard that reads pipeline-ge
 
 3. Run Streamlit:
 
- ```streamlit run app/streamlit_app.py ```
+ ```streamlit run app/streamlit_app.py --server.port 8501 --server.address 0.0.0.0 ```
 
-If you’re using GitHub Codespaces: open port 8501 from the Ports tab.
+Use the above if you’re using GitHub Codespaces: open port 8501 from the Ports tab.
 
 ## 📊 Expected Data (CSV Contracts)
 
@@ -73,6 +73,28 @@ Minimum expected columns:
 - axis (*optional metadata; not selected by the user*)
 
 The dashboard can apply a lightweight relevance filter (e.g., matching **bitcoin / btc**) to reduce off-topic items for the BTC view.
+
+
+## 🔮 Predictions (Pipeline Outputs)
+
+The frontend reads model outputs from **two separate CSV files** (one per model).  
+These files are optional: if they do not exist yet, the “Prediction” tab stays in informational mode.
+
+**Expected files (recommended naming):**
+- `data/processed/predictions_rf.csv`
+- `data/processed/predictions_arima.csv`
+
+**Minimum columns (both files):**
+- `timestamp` (UTC)
+- `y_pred` *(or `forecast` / `pred` / `prediction` — the frontend normalizes these)*
+
+**Optional:**
+- `y_true` (observed price at time `t`, enables observed vs predicted plots and error metrics)
+
+**UI behavior:**
+- If only one file exists → the dashboard plots and displays that model output
+- If both exist → outputs are merged on `timestamp` and an agreement indicator is shown
+- If neither exists → the Prediction tab remains a placeholder (no errors)
 
 ## 🧠 Signal Logic (MVP)
 
