@@ -10,12 +10,17 @@ import pandas as pd
 
 from src.frontend.data_loader import (
     load_prices, build_ohlc, load_news, filter_news_timewindow,
-    default_relevance_filter, quick_sentiment_score
+    default_relevance_filter, quick_sentiment_score, load_prediction_csv
 )
 from src.frontend.ui_components import candlestick_chart, line_with_ma
 
 PRICE_DEFAULT_PATH = 'data/raw/prices_raw_test.csv'
 NEWS_DEFAULT_PATH  = 'data/raw/news_raw_test.csv'
+
+# Cuando empecemos a ocupar los modelos, los datos se deberan guardar en 'processed'
+RF_PRED_PATH = 'data/processed/predictions_rf.csv'
+ARIMA_PRED_PATH = 'data/processed/predictions_arima.csv'
+
 
 st.set_page_config(page_title='BTC Predictor', page_icon='📈', layout='wide')
 
@@ -122,9 +127,104 @@ with tab1:
         st.info('No hay noticias para mostrar.')
 
 with tab2:
-    st.subheader('Predicción')
-    st.caption('Aquí se integrará el archivo de predicciones cuando esté disponible.')
-    st.info( 'En esta versión, la pestaña es solo informativa. ' 'Cuando existan los CSV de predicciones (por ejemplo en data/processed/), ' 'se mostrarán aquí las curvas de precio observado vs. precio predicho y la dirección final.' )
+    st.subheader("Predicción")
+    st.caption("Se integran dos salidas (exportadas a CSV) - Nodelos Random Forest y ARIMA/SARIMA")
+
+    # 1) Cargar ambos archivos (si existen)
+    rf_df = load_prediction_csv(RF_PRED_PATH, "y_pred_rf")
+    arima_df = load_prediction_csv(ARIMA_PRED_PATH, "y_pred_arima")
+
+    # 2) Si no hay nada aún, deja el placeholder (como ahora)
+    if rf_df.empty and arima_df.empty:
+        st.info(
+            "En esta versión, la pestaña es solo informativa. "
+            "Cuando existan los CSV en data/processed/, se mostrará aquí las curvas y la dirección final."
+        )
+    else:
+        # 3) Unir por timestamp (outer para no perder filas)
+        if not rf_df.empty and not arima_df.empty:
+            pred_df = pd.merge(rf_df, arima_df, on="timestamp", how="outer")
+
+            # Consolidar y_true si viene en ambos
+            if "y_true_x" in pred_df.columns or "y_true_y" in pred_df.columns:
+                pred_df["y_true"] = pred_df.get("y_true_x")
+                if "y_true_y" in pred_df.columns:
+                    pred_df["y_true"] = pred_df["y_true"].fillna(pred_df["y_true_y"])
+                pred_df = pred_df.drop(columns=[c for c in ["y_true_x", "y_true_y"] if c in pred_df.columns])
+        else:
+            pred_df = rf_df if not rf_df.empty else arima_df
+
+        pred_df = pred_df.sort_values("timestamp")
+
+        # 4) Filtrar por el mismo rango seleccionado en el sidebar
+        pred_window = pred_df[(pred_df["timestamp"] >= start_ts) & (pred_df["timestamp"] <= end_ts)].copy()
+
+        if pred_window.empty:
+            st.warning("Hay predicciones, pero no hay registros dentro del rango de fechas seleccionado.")
+        else:
+            # --- Next hour (t+1) ---
+            st.markdown("### ⏭️ Predicción próxima hora (t+1)")
+
+            last_price_series = price_window.dropna(subset=["price"])
+            if last_price_series.empty:
+                st.info("No hay precio disponible para calcular el timestamp objetivo (t+1).")
+            else:
+                last_seen_ts = last_price_series["timestamp"].max()
+                target_ts = last_seen_ts + pd.Timedelta(hours=1)
+
+                row_next = pred_df[pred_df["timestamp"] == target_ts]
+
+                if row_next.empty:
+                    st.info("Aún no existe una fila de predicción exactamente para la próxima hora (t+1).")
+                else:
+                    last_price = float(last_price_series.iloc[-1]["price"])
+
+                    rf_val = row_next["y_pred_rf"].iloc[0] if "y_pred_rf" in row_next.columns else None
+                    ar_val = row_next["y_pred_arima"].iloc[0] if "y_pred_arima" in row_next.columns else None
+
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Último precio observado (t)", f"{last_price:,.2f}")
+                    c2.metric("RF pred (t+1)", f"{rf_val:,.2f}" if rf_val is not None and pd.notna(rf_val) else "N/A")
+                    c3.metric("ARIMA/SARIMA pred (t+1)", f"{ar_val:,.2f}" if ar_val is not None and pd.notna(ar_val) else "N/A")
+
+                    # Agreement simple (no inventamos un modelo final)
+                    directions = []
+                    if rf_val is not None and pd.notna(rf_val):
+                        directions.append("up" if rf_val > last_price else "down" if rf_val < last_price else "flat")
+                    if ar_val is not None and pd.notna(ar_val):
+                        directions.append("up" if ar_val > last_price else "down" if ar_val < last_price else "flat")
+
+                    if len(directions) >= 2 and directions[0] == directions[1] and directions[0] != "flat":
+                        st.success("✅ Ambos modelos coinciden en la dirección (mayor confianza).")
+                    elif len(directions) >= 2 and directions[0] != directions[1]:
+                        st.warning("⚠️ Los modelos discrepan en dirección (señal mixta).")
+                    else:
+                        st.info("ℹ️ Solo hay salida de un modelo disponible por ahora.")
+
+            # --- Plot: observed vs predicted (o solo pred) ---
+            st.markdown("### 📈 Observed vs Predicted")
+
+            plot_df = pred_window.set_index("timestamp")
+            cols = []
+            if "y_true" in plot_df.columns:
+                cols.append("y_true")
+            if "y_pred_rf" in plot_df.columns:
+                cols.append("y_pred_rf")
+            if "y_pred_arima" in plot_df.columns:
+                cols.append("y_pred_arima")
+            
+            if not cols:
+                st.info("No se encontraron columnas de predicción para graficar.")
+            else:
+                st.line_chart(plot_df[cols])
+
+            # --- Table + download ---
+            st.markdown("### 📄 Predicciones (tabla)")
+            st.dataframe(pred_window.head(200), use_container_width=True)
+
+            csv_bytes = pred_window.to_csv(index=False).encode("utf-8")
+            st.download_button("Descargar predicciones (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv")
+
 
 with tab3:
     st.subheader('Resumen de datos')
