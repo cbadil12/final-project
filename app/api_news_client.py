@@ -33,9 +33,6 @@ LANGUAGE = "en"
 # ===============================
 newsapi = NewsApiClient(api_key=NEWS_API_KEY)
 
-
-print(newsapi)
-
 # ===============================
 # Test connection with NewsAPI using a minimal query.
 # ===============================

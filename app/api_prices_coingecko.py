@@ -17,19 +17,20 @@ import pandas as pd
 # CONFIGURATION
 # ===============================
 BASE_URL = "https://pro-api.coingecko.com/api/v3"
+API_KEY = os.getenv("COINGECKO_API_KEY")
 COIN_ID = "bitcoin"
 VS_CURRENCY = "usd"
 
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
-if COINGECKO_API_KEY is None:
+if API_KEY is None:
     raise EnvironmentError("❌ COINGECKO_API_KEY not found in environment variables")
 HEADERS = {
     "accept": "application/json",
-    "x-cg-pro-api-key": COINGECKO_API_KEY  # <-- clave
+    "x-cg-pro-api-key": API_KEY  # <-- clave
 }
 
 START_DATE = "2025-09-16"
 END_DATE   = "2025-12-16"
+INTERVAL = "hourly" # 'hourly' or 'daily'
 
 # ===============================
 # Fetch historical Bitcoin prices
@@ -82,7 +83,7 @@ if __name__ == "__main__":
         end_date=END_DATE,
         interval="hourly" # 'hourly' or 'daily'
     )
-    output_path = "data/raw/prices_raw.csv"
+    output_path = "data/raw/coingecko__prices_" + INTERVAL + "_START_"+START_DATE+"_END_"+END_DATE+ ".csv"
     df_price.to_csv(output_path, index=False)
     print(f"📈 Bitcoin price data saved to: {output_path}")
     print(df_price.head())
