@@ -19,7 +19,7 @@ import pandas as pd
 BASE_URL = "https://pro-api.coinmarketcap.com"   # CMC Pro API base domain
 API_KEY = os.getenv("COINMARKETCAP_API_KEY")
 if API_KEY is None:
-    raise EnvironmentError("❌ COINMARKETCAP_API_KEY not found in environment variables")
+    raise EnvironmentError("ERROR: COINMARKETCAP_API_KEY not found in environment variables")
 
 HEADERS = {
     "Accepts": "application/json",
@@ -33,13 +33,15 @@ HEADERS = {
 SYMBOL = "BTC"
 CONVERT = "USD"  # default is USD; you can set other fiat/crypto symbols too
 
-START_DATE = "2024-09-16"
-END_DATE   = "2024-12-16"
+START_DATE = "2025-12-19"
+END_DATE = "2026-01-15"
 
 # INTERVAL meaning (we map this to CMC OHLCV "time_period" and "interval")
 # - "hourly" -> time_period="hourly", interval="1h"
+# - "4h"     -> time_period="hourly", interval="4h"
 # - "daily"  -> time_period="daily",  interval="1d"
-INTERVAL = "daily"  # "hourly" or "daily"
+INTERVAL = "daily"  # "hourly", "4h", or "daily"
+PRICE_FIELD = "close"  # "close", "open", "max", or "min"
 
 
 # ===============================
@@ -59,7 +61,38 @@ def _ensure_not_future(end_date: str) -> None:
     end_ts = int(datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
     now_ts = int(datetime.now(tz=timezone.utc).timestamp())
     if end_ts > now_ts:
-        raise ValueError("❌ END_DATE is in the future. Historical endpoints only support past data.")
+        raise ValueError("ERROR: END_DATE is in the future. Historical endpoints only support past data.")
+
+
+def _describe_http_error(response: requests.Response | None) -> tuple[str, bool]:
+    """
+    Returns (message, should_fallback).
+    """
+    if response is None:
+        return ("ERROR: Request failed before a response was received.", False)
+
+    status_code = response.status_code
+    error_code = None
+    error_message = ""
+    try:
+        payload = response.json()
+        status = payload.get("status", {})
+        error_code = status.get("error_code")
+        error_message = status.get("error_message") or ""
+    except ValueError:
+        pass
+
+    if error_code == 1002:
+        return ("ERROR: API key missing or not sent in headers.", False)
+    if status_code == 401:
+        return ("ERROR: Unauthorized. Check your API key.", False)
+    if status_code == 403:
+        return ("WARN: Access forbidden. This endpoint may not be in your plan.", True)
+
+    message = f"ERROR: HTTP {status_code}"
+    if error_message:
+        message += f" - {error_message}"
+    return (message, False)
 
 
 # ===============================
@@ -69,6 +102,7 @@ def fetch_bitcoin_ohlcv_historical(
     start_date: str,
     end_date: str,
     interval: str = "hourly",
+    price_field: str = "close",
     symbol: str = "BTC",
     convert: str = "USD",
     skip_invalid: bool = True,
@@ -106,11 +140,14 @@ def fetch_bitcoin_ohlcv_historical(
     if interval == "hourly":
         time_period = "hourly"
         sample_interval = "1h"
+    elif interval == "4h":
+        time_period = "hourly"
+        sample_interval = "4h"
     elif interval == "daily":
         time_period = "daily"
         sample_interval = "1d"
     else:
-        raise ValueError("❌ interval must be 'hourly' or 'daily'")
+        raise ValueError("ERROR: interval must be 'hourly', '4h', or 'daily'")
 
     # CMC accepts Unix timestamps OR ISO 8601 strings.
     # We'll send ISO strings for readability.
@@ -162,9 +199,20 @@ def fetch_bitcoin_ohlcv_historical(
     df["time_close"] = pd.to_datetime(df["time_close"], utc=True)
     df = df.sort_values("time_open")
 
-    # For compatibility with your CoinGecko script naming:
-    # We'll return timestamp + close as "price"
-    df_out = df[["time_close", "close"]].rename(columns={"time_close": "timestamp", "close": "price"})
+    price_field_map = {
+        "close": "close",
+        "open": "open",
+        "max": "high",
+        "min": "low",
+    }
+    if price_field not in price_field_map:
+        raise ValueError("ERROR: price_field must be 'close', 'open', 'max', or 'min'")
+
+    src_price = price_field_map[price_field]
+    timestamp_col = "time_open" if price_field == "open" else "time_close"
+    df_out = df[[timestamp_col, src_price]].rename(
+        columns={timestamp_col: "timestamp", src_price: "price"}
+    )
     return df_out
 
 
@@ -229,6 +277,9 @@ def fetch_bitcoin_price_latest(
 # ENTRY POINT
 # ===============================
 if __name__ == "__main__":
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    raw_dir = os.path.join(base_dir, "data", "raw")
+    os.makedirs(raw_dir, exist_ok=True)
 
     # 1) Try historical OHLCV (may fail on Free plan)
     try:
@@ -236,20 +287,25 @@ if __name__ == "__main__":
             start_date=START_DATE,
             end_date=END_DATE,
             interval=INTERVAL,
+            price_field=PRICE_FIELD,
             symbol=SYMBOL,
             convert=CONVERT,
             skip_invalid=True,
             count=None  # you can set e.g. 2000 if you want to cap results
         )
-        output_path = f"data/raw/raw_prices_cmc_{INTERVAL}_START_{START_DATE}_END_{END_DATE}.csv"
+        output_path = os.path.join(
+            raw_dir,
+            f"raw_prices_cmc_{INTERVAL}_PRICE_{PRICE_FIELD}_START_{START_DATE}_END_{END_DATE}.csv",
+        )
         df_price.to_csv(output_path, index=False)
-        print(f"📈 CMC OHLCV historical saved to: {output_path}")
+        print(f"OK: CMC OHLCV historical saved to: {output_path}")
         print(df_price.head())
 
     except requests.exceptions.HTTPError as e:
-        # Typical on Free plan: 403 Forbidden
-        print("⚠️ CMC historical OHLCV request failed (likely plan limitation).")
-        print(f"HTTPError: {e}")
+        message, should_fallback = _describe_http_error(e.response)
+        print(message)
+        if not should_fallback:
+            raise
 
         # 2) Fallback: latest quote (usually allowed on Free)
         df_latest = fetch_bitcoin_price_latest(
@@ -258,7 +314,10 @@ if __name__ == "__main__":
             aux="cmc_rank,circulating_supply,total_supply,max_supply",
             skip_invalid=True
         )
-        output_path = f"data/raw/coinmarketcap_prices_" + INTERVAL + "_START_"+START_DATE+"_END_"+END_DATE+ ".csv"
+        output_path = os.path.join(
+            raw_dir,
+            f"coinmarketcap_prices_{INTERVAL}_START_{START_DATE}_END_{END_DATE}.csv",
+        )
         df_latest.to_csv(output_path, index=False)
-        print(f"✅ Fallback latest quote saved to: {output_path}")
+        print(f"OK: Fallback latest quote saved to: {output_path}")
         print(df_latest)
