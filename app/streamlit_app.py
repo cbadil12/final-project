@@ -26,8 +26,8 @@ from src.frontend.ui_components import candlestick_chart, line_with_ma
 
 
 # --- Paths: raw (test) ---
-PRICE_TEST_PATH = RAW_DIR / "prices_raw_test.csv"
-NEWS_TEST_PATH  = RAW_DIR / "news_raw_test.csv"
+PRICE_TEST_PATH = RAW_DIR / "prices_raw_1h.csv"
+NEWS_TEST_PATH  = RAW_DIR / "news_with_sentiment.csv"
 
 # --- Paths: processed (ideal/pipeline) ---
 PRICE_PROCESSED_PATH = PROCESSED_DIR / "prices_raw.csv"
@@ -106,6 +106,51 @@ st.markdown(
     .hero h1{{ margin:0 0 .5rem 0; font-size: clamp(2.2rem, 4vw, 3.4rem); z-index:1; }}
     .hero .tagline{{ color:#94a3b8; font-size: 1.05rem; text-align:center; max-width: 900px; z-index:1; }}
     .hero .cta{{ margin-top: 1.5rem; z-index:1; }}
+    
+    /* Disclaimer message (footer global) */
+    .disclaimer {{
+    margin-top: 0.75rem;
+    color: #94a3b8;
+    font-size: 0.78rem;
+    opacity: 0.90;
+    text-align: center;
+    line-height: 1.25;
+    }}
+    
+    /* Sidebar footer pegado al fondo */
+    section[data-testid="stSidebar"] > div {{
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+    }}
+
+    section[data-testid="stSidebar"] div[data-testid="stSidebarContent"] {{
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }}
+
+    .sidebar-footer {{
+        margin-top: auto;
+        padding-top: 12px;
+        border-top: 1px solid #2a2f3a;
+        color: #94a3b8;
+        font-size: 0.78rem;
+        opacity: 0.90;
+        line-height: 1.25;
+    }}
+
+    .sidebar-footer .meta {{
+        margin-bottom: 6px;
+        opacity: 0.95;
+    }}
+
+    .sidebar-footer .disclaimer {{
+        margin-top: 6px;
+        font-size: 0.74rem;
+        opacity: 0.85;
+        text-align: left;
+    }}
     </style>
     """,
     unsafe_allow_html=True
@@ -117,6 +162,14 @@ NAV_INDEX = {"Home": 0, "Overview": 1, "Dashboard": 2}
 def go_to(page_name: str):
     # Guardamos el índice que queremos seleccionar en el navbar
     st.session_state["nav_manual_select"] = NAV_INDEX.get(page_name, 0)
+
+DISCLAIMER_TEXT = (
+    "**Aviso: BTC Predictor es un proyecto demostrativo/educativo. "
+    "La información mostrada es solo informativa y no constituye asesoramiento financiero.**"
+)
+
+def render_disclaimer():
+    st.markdown(f"<div class='disclaimer'>{DISCLAIMER_TEXT}</div>", unsafe_allow_html=True)
 
 # ------------------ Views ------------------
 def render_home():
@@ -131,6 +184,7 @@ def render_home():
         """,
         unsafe_allow_html=True
     )
+    render_disclaimer()
 
 OVERVIEW_MD = """
 ## BTC Predictor
@@ -147,12 +201,12 @@ El objetivo es ofrecer una señal más completa para la toma de decisiones:
 **El análisis OHLC muestra el “qué” (movimiento del precio)** y el **sentimiento aporta el “por qué” (drivers emocionales)**.
 """
 
-
 def render_overview():
     st.header("Overview")
     st.markdown(OVERVIEW_MD)
     st.button("Ir a la App →", type="primary", on_click=go_to, args=("Dashboard",))
     st.markdown("</div></div>", unsafe_allow_html=True)
+    render_disclaimer()
 
 
 def render_app():
@@ -189,12 +243,14 @@ def render_app():
         "Fecha inicio",
         value=st.session_state.get("start_date", default_start),
         key="start_date",
+        help="Define el inicio del periodo para filtrar precio, noticias y predicciones."
     )
 
     end_date = st.sidebar.date_input(
         "Fecha fin",
         value=st.session_state.get("end_date", default_end),
         key="end_date",
+        help="Define el fin del periodo. El dashboard mostrará datos dentro de este rango."
     )
 
     interval = st.sidebar.selectbox(
@@ -202,24 +258,89 @@ def render_app():
         ["1h", "4h", "1d"],
         index=["1h", "4h", "1d"].index(st.session_state.get("interval", "1h")),
         key="interval",
+        help="Define la frecuencia de análisis del precio. La predicción es t+1: siguiente 1h/4h/1d según esta selección."
     )
 
     relevance = st.sidebar.checkbox(
         "Filtrar noticias relevantes",
         value=st.session_state.get("relevance", True),
         key="relevance",
+        help="Si está activo, se aplican filtros para quedarse con noticias más relacionadas a BTC/mercado."
     )
 
-    horizon = st.sidebar.slider(
-        "Horizonte de predicción (horas)",
-        1, 24,
-        value=int(st.session_state.get("horizon", 1)),
-        key="horizon",
+    
+    # --- Horizonte fijo: t+1 (siguiente intervalo según granularidad) ---
+    INTERVAL_TO_HOURS = {"1h": 1, "4h": 4, "1d": 24}
+    horizon_hours = INTERVAL_TO_HOURS.get(interval, 1)
+
+    st.sidebar.caption(
+        f"Predicción: **t+1** (siguiente {interval} → +{horizon_hours}h)"
     )
 
-    # --- Botón “Actualizar datos” al final: SOLO para refrescar CSV/caché ---
+
+   # ------------------ Selector Global vs Regímenes ------------------
+    mode = st.sidebar.selectbox(
+        "Modo de análisis",
+        ["Global", "Regímenes (Halvings)"],
+        index=0,
+        key="mode"
+    )
+
+    # Lista default (si aún no hay outputs por régimen)
+    DEFAULT_REGIMES = [
+        "2012–2016", "2016–2020", "2020–2024", "2024–Actual"
+    ]
+
+    def _latest_regime_from_processed() -> str:
+        """
+        Determina el 'último' régimen disponible desde outputs en data/processed.
+            Prioridad:
+            1) Si existe archivo con columnas ['timestamp','regime'], toma el regime del timestamp más reciente.
+            2) Si existe solo ['regime'], toma el último ordenado.
+            3) Si no existe nada, usa DEFAULT_REGIMES[-1].
+
+        """
+        candidates = [
+            PROCESSED_DIR / "predictions_arima_regimes.csv",
+            PROCESSED_DIR / "predictions_rf_regimes.csv",
+        ]
+
+        for fp in candidates:
+            if fp.exists():
+                try:
+                    df = pd.read_csv(fp)
+                    if "regime" in df.columns:
+                        continue
+
+                    # Ideal: timestamp + regime
+                    if "timestamp" in df.columns:
+                        d2 = df.dropna(subset=["timestamp", "regime"]).copy()
+                        if not d2.empty:
+                            d2["timestamp"] = pd.to_datetime(d2["timestamp"], errors="coerce", utc=True)
+                            d2 = d2.dropna(subset=["timestamp"])
+                            if not d2.empty:
+                                last_row = d2.sort_values("timestamp").iloc[-1]
+                                return str(last_row["regime"])
+                            
+                    regs = [str(x) for x in sorted(df["regime"].dropna().unique())]
+                    if regs:
+                        return regs[-1]
+                    
+                except Exception:
+                    pass
+
+        return DEFAULT_REGIMES[-1]
+
+    regime = None
+    if mode == "Regímenes (Halvings)":
+        regime = _latest_regime_from_processed()
+        st.sidebar.caption(f"Régimen activo: **{regime}**")
+
+    # --- Botón “Actualizar datos”: SOLO para refrescar CSV/caché ---
     st.sidebar.markdown("---")
-    if st.sidebar.button("Actualizar datos", type="secondary"):
+    if st.sidebar.button("Actualizar datos", type="secondary",
+        help="Refresca la información si se actualizaron los CSV en data/processed (limpia caché y recarga)."
+        ):
         st.cache_data.clear()
         st.rerun()
 
@@ -229,10 +350,20 @@ def render_app():
     end_ts = pd.Timestamp(end_date).tz_localize("UTC") + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
 
-    # --- Estado del dashboard (cliente-friendly) ---
+    # --- Estado del dashboard y disclaimer ---
     opened = st.session_state["opened_at_utc"]
-    st.sidebar.caption(f"Abierto: {opened:%Y-%m-%d %H:%M} UTC")
-    st.sidebar.caption(f"Datos hasta: {max_ts:%Y-%m-%d %H:%M} UTC")
+
+    st.sidebar.markdown(
+        f"""
+        <div class="sidebar-footer">
+            <div class="meta"><b>Abierto:</b> {opened:%Y-%m-%d %H:%M} UTC</div>
+            <div class="meta"><b>Datos hasta:</b> {max_ts:%Y-%m-%d %H:%M} UTC</div>
+            <div class="meta"><p></p></div>
+            <div class="disclaimer">{DISCLAIMER_TEXT}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
     # ------------------ Prepare data ------------------
     price_window = prices_df[(prices_df["timestamp"] >= start_ts) & (prices_df["timestamp"] <= end_ts)].copy()
@@ -263,22 +394,58 @@ def render_app():
     with col_stats:
         st.subheader("Sentimiento del mercado")
 
+        RECENT_HOURS = 48
+
         if news_window.empty:
             sentiment_score, sentiment_label, pos_hits, neg_hits = 0.0, "Neutral", 0, 0
+            used_scope = "sin Noticias"
         else:
-            sentiment_score, sentiment_label, pos_hits, neg_hits = quick_sentiment_score(news_window)
+            #Filtramos dentro de rango seleccioado
+            cutoff = end_ts - pd.Timedelta(hours=RECENT_HOURS)
+            news_recent = news_window[news_window["published_at"] >= cutoff].copy()
+
+            #Si no hay noticias en las ultimas N horas, cae en rango completo
+
+            if news_recent.empty:
+                news_recent = news_window
+                used_scope = f"rango completo (no hubo noticias en últimas {RECENT_HOURS}h)"
+            else:
+                used_scope = f"últimas {RECENT_HOURS}h"
+
+        # Calcular score agregado (preferimos 'sentiment_score' si existe)
+
+            if "sentiment_score" in news_recent.columns:
+                s = pd.to_numeric(news_recent["sentiment_score"], errors="coerce").dropna()
+
+                sentiment_score = float(s.mean()) if not s.empty else 0.0
+
+                pos_hits = int((s > 0.05).sum())
+                neg_hits = int((s < -0.05).sum())
+
+                if sentiment_score > 0.05:
+                    sentiment_label = "Positivo"
+                elif sentiment_score < -0.05:
+                    sentiment_label = "Negativo"
+                else:
+                    sentiment_label = "Neutral"
+            else:
+                #Si no hay sentiment Score
+                sentiment_score, sentiment_label, pos_hits, neg_hits = quick_sentiment_score(news_recent)
+
 
         prob = int((sentiment_score + 1) * 50)
+        prob = max(0, min(100, prob))
 
         st.metric("Sentimiento agregado", sentiment_label, f"{sentiment_score:+.2f}")
         st.progress(prob)
         st.caption(f"Probabilidad (escala interna): {prob}%")
         st.caption(f"Hits → Positivos: {pos_hits} | Negativos: {neg_hits}")
+        st.caption(f"Ventana usada para el sentimiento: {used_scope}")    
 
         st.subheader("Señal final")
-        if sentiment_score > 0.10:
+        if sentiment_score > 0.05:
             final_label, color, conf = "SUBIDA", "green", prob
-        elif sentiment_score < -0.10:
+        elif sentiment_score < -0.05:
             final_label, color, conf = "BAJADA", "red", prob
         else:
             final_label, color, conf = "ESCENARIO NEUTRAL", "gray", prob
@@ -294,6 +461,7 @@ def render_app():
     with tab_context:
         st.subheader("Noticias filtradas")
         st.caption(f"Registros: {len(news_window)}")
+        st.caption(f"💡 La señal resume el sentimiento de las noticias más recientes dentro del rango elegido, para evitar diluir análisis; el rango completo se usa para contexto.")
 
         if not news_window.empty:
             st.dataframe(news_window[["published_at", "source", "axis", "title"]].head(200), width='stretch')
@@ -336,22 +504,22 @@ def render_app():
             if pred_window.empty:
                 st.warning("Hay predicciones, pero no hay registros dentro del rango de fechas seleccionado.")
             else:
-                # --- Next horizon (t+horizon) ---
-                st.markdown(f"### ⏭️ Predicción horizonte (t+{horizon}h)")
+                # --- Next horizon (t+1) ---
+                st.markdown(f"### ⏭️ Predicción  — siguiente {interval} (+{horizon_hours}h)")
 
                 last_price_series = price_window.dropna(subset=["price"])
                 if last_price_series.empty:
-                    st.info("No hay precio disponible para calcular el timestamp objetivo (t+h).")
+                    st.info("No hay precio disponible para calcular el timestamp objetivo (t+1).")
                 else:
                     last_seen_ts = last_price_series["timestamp"].max()
-                    target_ts = last_seen_ts + pd.Timedelta(hours=horizon)
+                    target_ts = last_seen_ts + pd.Timedelta(hours=horizon_hours)
 
                     st.caption(f"Base (último dato): {last_seen_ts:%Y-%m-%d %H:%M} UTC → Objetivo: {target_ts:%Y-%m-%d %H:%M} UTC")
 
                     row_next = pred_df[pred_df["timestamp"] == target_ts]
 
                     if row_next.empty:
-                        st.info(f"Aún no existe una fila de predicción exactamente para t+{horizon}h.")
+                        st.info(f"Aún no existe una fila de predicción exactamente para el siguiente {interval} (t+1).")
                     else:
                         last_price = float(last_price_series.iloc[-1]["price"])
 
@@ -360,8 +528,8 @@ def render_app():
 
                         c1, c2, c3 = st.columns(3)
                         c1.metric("Último precio observado (t)", f"{last_price:,.2f}")
-                        c2.metric(f"RF pred (t+{horizon}h)", f"{rf_val:,.2f}" if rf_val is not None and pd.notna(rf_val) else "N/A")
-                        c3.metric(f"ARIMA/SARIMA pred (t+{horizon}h)", f"{ar_val:,.2f}" if ar_val is not None and pd.notna(ar_val) else "N/A")
+                        c2.metric(f"RF pred (t+1)", f"{rf_val:,.2f}" if rf_val is not None and pd.notna(rf_val) else "N/A")
+                        c3.metric(f"ARIMA/SARIMA pred (t+1)", f"{ar_val:,.2f}" if ar_val is not None and pd.notna(ar_val) else "N/A")
 
                         directions = []
                         if rf_val is not None and pd.notna(rf_val):
@@ -447,6 +615,7 @@ def render_app():
         else:
             st.caption("Notebook se integrará en `main` como: `notebooks/eda_time_series.ipynb`")
 
+
 # ------------------ Top nav (streamlit-option-menu) ------------------
 
 manual = st.session_state.get("nav_manual_select", None)
@@ -479,7 +648,7 @@ selected = option_menu(
     },
 )
 
-# (Opcional) Oculta sidebar en Home/Overview para look "presentación"
+#----- Oculta sidebar en Home/Overview -----
 if selected in ("Home", "Overview"):
     st.markdown("<style>section[data-testid='stSidebar']{display:none;}</style>", unsafe_allow_html=True)
 
