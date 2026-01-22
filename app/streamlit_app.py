@@ -1,4 +1,7 @@
-from datetime import datetime, timezone
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+from datetime import datetime, timezone, time as dtime
 import sys
 import os
 from pathlib import Path
@@ -9,6 +12,7 @@ from streamlit_option_menu import option_menu
 import pandas as pd
 import math
 
+# ------------------ Paths base ------------------
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.append(ROOT)
@@ -18,29 +22,31 @@ ASSETS_DIR = ROOT_PATH / "assets"
 RAW_DIR = ROOT_PATH / "data" / "raw"
 PROCESSED_DIR = ROOT_PATH / "data" / "processed"
 
+# Helpers de frontend
 from src.frontend.data_loader import (
     load_prices, build_ohlc, load_news, filter_news_timewindow,
     default_relevance_filter, quick_sentiment_score, load_prediction_csv
 )
 from src.frontend.ui_components import candlestick_chart, line_with_ma
 
-
-# --- Paths: raw (test) ---
+# ------------------ Files esperados ------------------
+# raw (demo/fallback)
 PRICE_TEST_PATH = RAW_DIR / "prices_raw_1h.csv"
 NEWS_TEST_PATH  = RAW_DIR / "news_with_sentiment.csv"
 
-# --- Paths: processed (ideal/pipeline) ---
+# processed (pipeline ideal)
 PRICE_PROCESSED_PATH = PROCESSED_DIR / "prices_raw.csv"
 NEWS_PROCESSED_PATH  = PROCESSED_DIR / "news_raw.csv"
 
-# --- Predictions (pipeline outputs) ---
-RF_PRED_PATH = PROCESSED_DIR / "predictions_rf.csv"
+# predictions (pipeline outputs)
+RF_PRED_PATH    = PROCESSED_DIR / "predictions_rf.csv"
 ARIMA_PRED_PATH = PROCESSED_DIR / "predictions_arima.csv"
 
+RF_PRED_REG_PATH    = PROCESSED_DIR / "predictions_rf_regimes.csv"
+ARIMA_PRED_REG_PATH = PROCESSED_DIR / "predictions_arima_regimes.csv"
 
-# ------------------ Helpers ------------------
+# ------------------ Funciones de utilidad ------------------
 def _asset_to_data_uri(path: Path) -> str | None:
-    """Convierte imagen local a data URI base64 para usar en CSS. Si no existe, None."""
     if not path.exists():
         return None
     mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
@@ -56,23 +62,22 @@ def _load_news_cached(path_str: str) -> pd.DataFrame:
     return load_news(path_str)
 
 def _pick_data_paths(prefer_processed: bool) -> tuple[Path, Path]:
-    """Elige paths para precios/noticias según exista processed o no."""
+    """Selecciona archivos processed si existen; si no, usa raw (fallback demo)."""
     if prefer_processed and PRICE_PROCESSED_PATH.exists() and NEWS_PROCESSED_PATH.exists():
         return PRICE_PROCESSED_PATH, NEWS_PROCESSED_PATH
-    # fallback a test
     return PRICE_TEST_PATH, NEWS_TEST_PATH
 
-# ------------------ Streamlit config ------------------
+# ------------------ Config Streamlit ------------------
 st.set_page_config(page_title='BTC Predictor', page_icon='📈', layout='wide')
 
-# ------------------ Load Bootstrap Icons ------------------
+# ----- Bootstrap Icons -----
 st.markdown(
     """
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     """,
     unsafe_allow_html=True
 )
-
 
 # --- Estilos globales + Home hero ---
 btc_bg_uri = _asset_to_data_uri(ASSETS_DIR / "btc_logo_gray.png")
@@ -82,31 +87,22 @@ st.markdown(
     <style>
     .main {{ background-color: #0F1015; color: #e5e7eb; }}
     .stMetric {{ background-color: #0F1015 !important; }}
-
+    
     /* Portada ("Home") */
     .hero {{
-      min-height: 72vh;
-      padding: 4rem 2rem;
-      border-radius: 16px;
+      min-height: 72vh; padding: 4rem 2rem; border-radius: 16px;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      background-color: #0F1015;
-      color: #e5e7eb;
-      position: relative; overflow: hidden;
+      background-color: #0F1015; color: #e5e7eb; position: relative; overflow: hidden;
     }}
     .hero::before{{
-      content:"";
-      position:absolute; inset:0;
-      background-repeat: repeat;
-      background-size: 220px;
-      background-position: 0 0;
-      opacity: 0.08;
-      filter: grayscale(100%);
-      background-image: url('{btc_bg_uri if btc_bg_uri else ""}');
+      content:""; position:absolute; inset:0; background-repeat: repeat;
+      background-size: 220px; background-position: 0 0; opacity: 0.08;
+      filter: grayscale(100%); background-image: url('{btc_bg_uri if btc_bg_uri else ""}');
     }}
     .hero h1{{ margin:0 0 .5rem 0; font-size: clamp(2.2rem, 4vw, 3.4rem); z-index:1; }}
     .hero .tagline{{ color:#94a3b8; font-size: 1.05rem; text-align:center; max-width: 900px; z-index:1; }}
     .hero .cta{{ margin-top: 1.5rem; z-index:1; }}
-    
+
     /* Disclaimer message (footer global) */
     .disclaimer {{
     margin-top: 0.75rem;
@@ -116,62 +112,130 @@ st.markdown(
     text-align: center;
     line-height: 1.25;
     }}
-    
-    /* Sidebar footer pegado al fondo */
+
+    /* Sidebar */
     section[data-testid="stSidebar"] > div {{
-        display: flex;
-        flex-direction: column;
-        height: 100vh;
+        display: flex; flex-direction: column; height: 100vh;
     }}
-
     section[data-testid="stSidebar"] div[data-testid="stSidebarContent"] {{
-        display: flex;
-        flex-direction: column;
-        height: 100%;
+        display: flex; flex-direction: column; height: 100%;
     }}
-
     .sidebar-footer {{
-        margin-top: auto;
-        padding-top: 12px;
-        border-top: 1px solid #2a2f3a;
-        color: #94a3b8;
-        font-size: 0.78rem;
-        opacity: 0.90;
-        line-height: 1.25;
+        margin-top: auto; padding-top: 12px; border-top: 1px solid #2a2f3a;
+        color: #94a3b8; font-size: 0.78rem; opacity: 0.90; line-height: 1.25;
     }}
 
-    .sidebar-footer .meta {{
-        margin-bottom: 6px;
-        opacity: 0.95;
-    }}
-
+    .sidebar-footer .meta {{ margin-bottom: 6px; opacity: 0.95; }}
     .sidebar-footer .disclaimer {{
-        margin-top: 6px;
-        font-size: 0.74rem;
-        opacity: 0.85;
-        text-align: left;
+        margin-top: 6px; font-size: 0.74rem; opacity: 0.85; text-align: left;
     }}
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# --- Navegación: helper para saltar de página desde botones ---
-NAV_INDEX = {"Home": 0, "Overview": 1, "Dashboard": 2}
-
+NAV_INDEX = {"Home": 0, "Overview": 1, "Dashboard": 2, "Recomendaciones": 3}
 def go_to(page_name: str):
-    # Guardamos el índice que queremos seleccionar en el navbar
     st.session_state["nav_manual_select"] = NAV_INDEX.get(page_name, 0)
 
 DISCLAIMER_TEXT = (
     "**Aviso: BTC Predictor es un proyecto demostrativo/educativo. "
     "La información mostrada es solo informativa y no constituye asesoramiento financiero.**"
 )
-
 def render_disclaimer():
     st.markdown(f"<div class='disclaimer'>{DISCLAIMER_TEXT}</div>", unsafe_allow_html=True)
 
-# ------------------ Views ------------------
+# ------------------ Definición de regímenes ------------------
+REGIME_BOUNDS = [
+    ("2012–2016", pd.Timestamp("2012-11-28 00:00:00", tz="UTC"), pd.Timestamp("2016-07-09 23:59:59", tz="UTC")),
+    ("2016–2020", pd.Timestamp("2016-07-10 00:00:00", tz="UTC"), pd.Timestamp("2020-05-10 23:59:59", tz="UTC")),
+    ("2020–2024", pd.Timestamp("2020-05-11 00:00:00", tz="UTC"), pd.Timestamp("2024-04-19 23:59:59", tz="UTC")),
+    ("2024–Actual", pd.Timestamp("2024-04-20 00:00:00", tz="UTC"), pd.Timestamp("2100-12-31 23:59:59", tz="UTC")),
+]
+
+def regime_for_timestamp(ts: pd.Timestamp) -> str | None:
+    if ts is None or pd.isna(ts):
+        return None
+    for name, r_start, r_end in REGIME_BOUNDS:
+        if r_start <= ts <= r_end:
+            return name
+    return None
+
+def bounds_for_regime(name: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    for r_name, r_start, r_end in REGIME_BOUNDS:
+        if r_name == name:
+            return r_start, r_end
+    return None
+
+def round_down_to_interval(ts: pd.Timestamp, interval: str) -> pd.Timestamp:
+    """Alinea target_ts al borde inferior del intervalo (1h, 4h, 1d)."""
+    if interval == "1h":
+        return ts.replace(minute=0, second=0, microsecond=0)
+    if interval == "4h":
+        hr = (ts.hour // 4) * 4
+        return ts.replace(hour=hr, minute=0, second=0, microsecond=0)
+    if interval == "1d":
+        return ts.normalize()
+    return ts
+
+
+def _nearest_row_by_ts(df: pd.DataFrame, target_ts: pd.Timestamp, ts_col="timestamp"):
+    """Devuelve la fila más cercana en tiempo a target_ts.
+    Si df está vacío o falta ts_col, devuelve None.
+    """
+    if df is None or df.empty or ts_col not in df.columns or target_ts is None:
+        return None
+
+    tmp = df.dropna(subset=[ts_col]).copy()
+    if tmp.empty:
+        return None
+
+    # Asegurar tz-awareness comparable
+    tmp[ts_col] = pd.to_datetime(tmp[ts_col], utc=True)
+
+    # índice del más cercano
+    idx = (tmp[ts_col] - target_ts).abs().idxmin()
+    return tmp.loc[idx]
+
+def _direction_from_pred(base: float | None, pred: float | None, neutral_pct: float = 0.002):
+    """Dirección usando cambio relativo vs base.
+    neutral_pct=0.002 => +-0.2% se considera neutral (evita ruido).
+    """
+    if base is None or pred is None or base == 0:
+        return ("ESCENARIO NEUTRAL", "gray", None)
+
+    delta = (pred - base) / base
+    if delta > neutral_pct:
+        return ("SUBIDA", "green", delta)
+    if delta < -neutral_pct:
+        return ("BAJADA", "red", delta)
+    return ("ESCENARIO NEUTRAL", "gray", delta)
+
+def _get_base_price_for_target(price_pack, fallback_df, target_ts: pd.Timestamp, horizon_hours: int):
+    """Intenta base_ref = close en (target_ts - horizon). Si no existe, usa último close <= target_ts."""
+    # Preferimos OHLC si existe
+    ohlc = getattr(price_pack, "ohlc", None)
+    if ohlc is not None and not ohlc.empty and "timestamp" in ohlc.columns:
+        ohlc = ohlc.sort_values("timestamp")
+        t_prev = target_ts - pd.Timedelta(hours=horizon_hours)
+        exact = ohlc[ohlc["timestamp"] == t_prev]
+        if not exact.empty and "close" in exact.columns:
+            return float(exact["close"].iloc[0])
+
+        prev = ohlc[ohlc["timestamp"] <= target_ts].tail(1)
+        if not prev.empty and "close" in prev.columns:
+            return float(prev["close"].iloc[0])
+
+    # Fallback: usar price_window/df original
+    if fallback_df is not None and not fallback_df.empty and "timestamp" in fallback_df.columns and "price" in fallback_df.columns:
+        tmp = fallback_df.dropna(subset=["price"]).sort_values("timestamp")
+        prev = tmp[tmp["timestamp"] <= target_ts].tail(1)
+        if not prev.empty:
+            return float(prev["price"].iloc[0])
+
+    return None
+
+# ------------------ Vistas ------------------
 def render_home():
     st.markdown(
        """
@@ -181,7 +245,7 @@ def render_home():
             Predicción técnica + sentimiento para una señal de mercado más completa
           </p>
           <div class="cta">
-        """,
+       """,
         unsafe_allow_html=True
     )
     render_disclaimer()
@@ -189,197 +253,288 @@ def render_home():
 OVERVIEW_MD = """
 ## BTC Predictor
 
-En un mercado altamente volátil, el precio refleja el resultado de la actividad del mercado, pero no siempre explica sus causas.  
-Noticias y eventos pueden influir en el comportamiento de los inversores y amplificar movimientos.  
-Este proyecto integra **datos cuantitativos** (precio e indicadores) con **datos cualitativos** (sentimiento) para aportar contexto a la predicción.
+En un mercado altamente volátil como el de Bitcoin, las variaciones de precio suelen 
+estar impulsadas no solo por factores técnicos, sino también por el contexto informativo 
+y emocional del mercado.  
+**BTC Predictor** combina **ambos mundos** para ofrecer una visión más completa del comportamiento del precio.
 
 ---
 
-### Resumen
-**BTC Predictor** es un modelo predictivo del precio de Bitcoin que combina **análisis técnico** (series temporales e indicadores) con **análisis de sentimiento** (noticias y eventos).  
-El objetivo es ofrecer una señal más completa para la toma de decisiones:  
-**El análisis OHLC muestra el “qué” (movimiento del precio)** y el **sentimiento aporta el “por qué” (drivers emocionales)**.
+### 🔎 ¿Qué integra?
+
+- **Datos cuantitativos:** precio, estructura OHLC, series temporales y estacionalidad por ciclos (halvings).  
+- **Datos cualitativos:** noticias filtradas y un análisis de sentimiento basado en ventanas recientes.  
+
+Esta combinación permite observar **qué está haciendo el precio** y **qué lo puede estar impulsando**.
+
+---
+
+### 🎯 ¿Qué hace el predictor?
+
+BTC Predictor permite dos enfoques de análisis complementarios:
+
+#### **1. Modo Global**
+Analiza un rango seleccionado por el usuario y construye:
+
+- Precio histórico (1h / 4h / 1d) con resampling OHLC  
+- Noticias filtradas por relevancia  
+- Sentimiento agregado en ventanas recientes  
+- **Predicción técnica t+1** (Random Forest y ARIMA global)
+
+*Ideal para analizar periodos amplios y observar cómo cambian las señales en función del sentimiento y la acción del precio.*
+
+
+
+#### **2. Modo Regímenes (Halvings)**
+El usuario selecciona una fecha objetivo y la aplicación identifica automáticamente 
+el **régimen al que pertenece**, aplicando el **modelo ARIMA específico de ese ciclo**.
+
+Permite:
+- evaluar la estacionalidad entre halvings,  
+- comparar predicción vs precio real en periodos pasados,  
+- y estudiar cómo cambian los patrones entre ciclos.
+
+---
+
+### 📌 Enfoque del proyecto
+
+El objetivo es mostrar un **modelo predictivo funcional**, construido con técnicas 
+de series temporales y enriquecido con información contextual.  
+La aplicación facilita la exploración visual y comparativa entre modos, 
+permitiendo entender cómo reaccionan los modelos ante diferentes condiciones del mercado.
+
+Este diseño permite extender el sistema fácilmente con nuevos modelos, fuentes de datos
+o flujos automatizados en versiones futuras.
 """
 
 def render_overview():
-    st.header("Overview")
     st.markdown(OVERVIEW_MD)
-    st.button("Ir a la App →", type="primary", on_click=go_to, args=("Dashboard",))
+    left, center, right =st.columns(3)
+    center.button("Ir a la App →", type="primary", on_click=go_to, args=("Dashboard",),)
     st.markdown("</div></div>", unsafe_allow_html=True)
+    render_disclaimer()
+
+
+def render_recommendations():
+    st.header("🔮 Recomendaciones y mejoras futuras")
+
+    st.markdown("""
+    Esta sección resume **extensiones naturales** de la solución, centradas en 
+    refinar y escalar lo que ya funciona en **BTC Predictor**, a futuro.
+
+    ---
+
+    ### 📡 1. Integración con datos en tiempo real
+    - Conectar una API de precios en vivo. Limitaciones actuales por rango.
+    - Añadir el indicador *Fear & Greed Index* desde su API oficial.
+    - Actualizar las noticias automáticamente para que la señal de sentimiento
+      se alimente del mercado actual, de una manera más rápida.
+
+    
+
+    ### 🔄 2. Automatizar el pipeline de predicción
+    - Generar predicciones bajo demanda para fechas específicas.
+    - Registrar entradas/salidas para evaluar históricamente el rendimiento del predictor.
+
+    
+
+    ### 📏 3. Evaluación y calibración continua
+    - Implementar backtesting para comparar las predicciones con el precio real.
+    - Analizar el rendimiento de cada régimen
+
+    
+
+    ### 💬 4. Extender el análisis de sentimiento
+    - Incluir nuevas fuentes como redes sociales o el índice *Fear & Greed* diario.
+    - Añadir ventanas ajustables por tipo de evento (últimas 4h, 24h, etc.)
+    - Incorporar mayor granularidad en el peso de cada noticia, y mejorar el componente cualitativo sin cambiar el modelo predictivo.
+
+    
+
+    ### 🎛️ 5. Mejoras de experiencia de usuario
+    - Agregar un modo “principiante” con explicaciones guiadas.
+    - Resaltado visual cuando los modelos coinciden o divergen.
+    - Exportación de vistas en PDF.
+
+    ---
+
+    En conjunto, estas recomendaciones **no cambian la lógica del predictor actual**, 
+    sino que lo fortalecen y lo preparan para escenarios más dinámicos y escalables.
+    """)
     render_disclaimer()
 
 
 def render_app():
     st.title('BTC Predictor')
     st.caption("Dashboard para analizar precio, noticias y sentimiento del mercado en Bitcoin ₿.")
-    
-    # --- Guardar hora de apertura (una sola vez por sesión) ---
+
+    # Abierto (una vez por sesión)
     if "opened_at_utc" not in st.session_state:
         st.session_state["opened_at_utc"] = datetime.now(timezone.utc)
 
-    # ------------------ Sidebar (solo en App) ------------------
+    # -------------- Sidebar --------------
     st.sidebar.title("Panel de control")
-    st.sidebar.write("Ajusta el rango de fechas y los filtros para ver cómo cambia la señal.")
 
-    prefer_processed = PRICE_PROCESSED_PATH.exists() and NEWS_PROCESSED_PATH.exists()
-    price_path, news_path = _pick_data_paths(prefer_processed)
+    debug_mode = st.sidebar.toggle("Mostrar detalles técnicos (debug)", value=False)
 
-    prices_df = _load_prices_cached(str(price_path))
-    news_df   = _load_news_cached(str(news_path))
-
-    if prices_df.empty or news_df.empty:
-        st.error("No se pudieron cargar precios o noticias (revisa data/raw y/o data/processed).")
-        return
-
-    min_ts = min(prices_df["timestamp"].min(), news_df["published_at"].min())
-    max_ts = max(prices_df["timestamp"].max(), news_df["published_at"].max())
-
-    # Para no abrir siemprer con hisórico - set Defaults
-    default_end = max_ts.date()
-    default_start = (max_ts - pd.Timedelta(days=90)).date() if hasattr(max_ts, "date") else min_ts.date()
-
-    # --- Widgets SIN form => rerun inmediato al cambiar ---
-    start_date = st.sidebar.date_input(
-        "Fecha inicio",
-        value=st.session_state.get("start_date", default_start),
-        key="start_date",
-        help="Define el inicio del periodo para filtrar precio, noticias y predicciones."
+    # Modo (Global vs Regímenes) — Global por defecto
+    mode = st.sidebar.selectbox(
+        "Modo de análisis",
+        ["Global", "Regímenes (Halvings)"],
+        index=0,
+        key="mode",
     )
 
-    end_date = st.sidebar.date_input(
-        "Fecha fin",
-        value=st.session_state.get("end_date", default_end),
-        key="end_date",
-        help="Define el fin del periodo. El dashboard mostrará datos dentro de este rango."
-    )
-
+    # Granularidad
     interval = st.sidebar.selectbox(
         "Granularidad",
         ["1h", "4h", "1d"],
         index=["1h", "4h", "1d"].index(st.session_state.get("interval", "1h")),
         key="interval",
-        help="Define la frecuencia de análisis del precio. La predicción es t+1: siguiente 1h/4h/1d según esta selección."
+        help="Frecuencia del precio. La predicción t+1 sigue esta granularidad."
     )
 
-    relevance = st.sidebar.checkbox(
-        "Filtrar noticias relevantes",
-        value=st.session_state.get("relevance", True),
-        key="relevance",
-        help="Si está activo, se aplican filtros para quedarse con noticias más relacionadas a BTC/mercado."
-    )
-
-    
-    # --- Horizonte fijo: t+1 (siguiente intervalo según granularidad) ---
     INTERVAL_TO_HOURS = {"1h": 1, "4h": 4, "1d": 24}
     horizon_hours = INTERVAL_TO_HOURS.get(interval, 1)
+    st.sidebar.caption(f"Predicción: **t+1** (siguiente {interval} → +{horizon_hours}h)")
 
-    st.sidebar.caption(
-        f"Predicción: **t+1** (siguiente {interval} → +{horizon_hours}h)"
-    )
+    # -------------- Carga de datasets (processed o raw) --------------
+    prefer_processed = PRICE_PROCESSED_PATH.exists() and NEWS_PROCESSED_PATH.exists()
+    price_path, news_path = _pick_data_paths(prefer_processed)
 
+    prices_df = _load_prices_cached(str(price_path))
+    news_df   = _load_news_cached(str(news_path)) if news_path.exists() else pd.DataFrame()
 
-   # ------------------ Selector Global vs Regímenes ------------------
-    mode = st.sidebar.selectbox(
-        "Modo de análisis",
-        ["Global", "Regímenes (Halvings)"],
-        index=0,
-        key="mode"
-    )
+    if prices_df.empty:
+        st.error("No se pudieron cargar precios (revisa data/raw y/o data/processed).")
+        return
 
-    # Lista default (si aún no hay outputs por régimen)
-    DEFAULT_REGIMES = [
-        "2012–2016", "2016–2020", "2020–2024", "2024–Actual"
-    ]
+    # -------------- Widgets dependientes del modo --------------
+    # Global: rango
+    if mode == "Global":
+        # Rango por defecto (60 días hasta el max de datasets)
+        if not news_df.empty:
+            min_ts = min(prices_df["timestamp"].min(), news_df["published_at"].min())
+            max_ts = max(prices_df["timestamp"].max(), news_df["published_at"].max())
+        else:
+            min_ts = prices_df["timestamp"].min()
+            max_ts = prices_df["timestamp"].max()
 
-    def _latest_regime_from_processed() -> str:
-        """
-        Determina el 'último' régimen disponible desde outputs en data/processed.
-            Prioridad:
-            1) Si existe archivo con columnas ['timestamp','regime'], toma el regime del timestamp más reciente.
-            2) Si existe solo ['regime'], toma el último ordenado.
-            3) Si no existe nada, usa DEFAULT_REGIMES[-1].
+        default_end = max_ts.date()
+        default_start = (max_ts - pd.Timedelta(days=60)).date()
 
-        """
-        candidates = [
-            PROCESSED_DIR / "predictions_arima_regimes.csv",
-            PROCESSED_DIR / "predictions_rf_regimes.csv",
-        ]
+        start_date = st.sidebar.date_input(
+            "Fecha inicio", value=st.session_state.get("start_date", default_start),
+            key="start_date"
+        )
+        end_date = st.sidebar.date_input(
+            "Fecha fin", value=st.session_state.get("end_date", default_end),
+            key="end_date"
+        )
+        relevance = st.sidebar.checkbox(
+            "Filtrar noticias relevantes",
+            value=st.session_state.get("relevance", True),
+            key="relevance",
+            help="Aplica filtro simple ‘bitcoin|btc’ en título/descripcion."
+        )
 
-        for fp in candidates:
-            if fp.exists():
-                try:
-                    df = pd.read_csv(fp)
-                    if "regime" in df.columns:
-                        continue
+        start_ts = pd.Timestamp(start_date).tz_localize("UTC")
+        end_ts   = pd.Timestamp(end_date).tz_localize("UTC") + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
-                    # Ideal: timestamp + regime
-                    if "timestamp" in df.columns:
-                        d2 = df.dropna(subset=["timestamp", "regime"]).copy()
-                        if not d2.empty:
-                            d2["timestamp"] = pd.to_datetime(d2["timestamp"], errors="coerce", utc=True)
-                            d2 = d2.dropna(subset=["timestamp"])
-                            if not d2.empty:
-                                last_row = d2.sort_values("timestamp").iloc[-1]
-                                return str(last_row["regime"])
-                            
-                    regs = [str(x) for x in sorted(df["regime"].dropna().unique())]
-                    if regs:
-                        return regs[-1]
-                    
-                except Exception:
-                    pass
+        # Filtros data
+        price_window = prices_df[(prices_df["timestamp"] >= start_ts) & (prices_df["timestamp"] <= end_ts)].copy()
 
-        return DEFAULT_REGIMES[-1]
+        if not news_df.empty:
+            news_window = filter_news_timewindow(news_df, start_ts, end_ts)
+            if relevance:
+                news_window = default_relevance_filter(news_window)
+        else:
+            news_window = pd.DataFrame()
 
-    regime = None
-    if mode == "Regímenes (Halvings)":
-        regime = _latest_regime_from_processed()
-        st.sidebar.caption(f"Régimen activo: **{regime}**")
+        # Sidebar footer
+        opened = st.session_state["opened_at_utc"]
+        st.sidebar.markdown(
+            f"""
+            <div class="sidebar-footer">
+                <div class="meta"><b>Abierto:</b> {opened:%Y-%m-%d %H:%M} UTC</div>
+                <div class="meta"><b>Datos hasta:</b> {prices_df['timestamp'].max():%Y-%m-%d %H:%M} UTC</div>
+                <div class="meta"><p></p></div>
+                <div class="disclaimer">{DISCLAIMER_TEXT}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    # --- Botón “Actualizar datos”: SOLO para refrescar CSV/caché ---
+    # ----------*----- Regímenes: fecha objetivo (y hora) -----*----------
+    else:
+        # Elegir fecha/ hora objetivo (UTC) — front asigna régimen automáticamente
+        now_utc = pd.Timestamp.utcnow()
+
+        tgt_date = st.sidebar.date_input(
+            "Fecha objetivo (UTC)",
+            value=now_utc.date(),
+            key="target_date"
+        )
+        default_time = dtime(hour=now_utc.hour, minute=0, second=0)
+        tgt_time = st.sidebar.time_input(
+            "Hora objetivo (UTC)",
+            value=default_time,
+            key="target_time"
+        )
+        target_naive = datetime.combine(pd.to_datetime(tgt_date).date(), tgt_time)
+        target_ts = pd.Timestamp(target_naive).tz_localize("UTC")
+        target_ts = round_down_to_interval(target_ts, interval)
+
+        # Determinar régimen por target_ts
+        regime = regime_for_timestamp(target_ts) or "2024–Actual"
+        r_bounds = bounds_for_regime(regime)
+        if r_bounds:
+            r_start, r_end = r_bounds
+            # Clamp a límites del régimen + realinear
+            if target_ts < r_start: target_ts = round_down_to_interval(r_start, interval)
+            if target_ts > r_end:   target_ts = round_down_to_interval(r_end, interval)
+        else:
+            r_start, r_end = pd.Timestamp("2012-01-01", tz="UTC"), pd.Timestamp("2100-12-31", tz="UTC")
+
+        st.sidebar.caption(f"Régimen detectado: **{regime}**")
+        st.sidebar.info("En modo Regímenes la predicción usa exclusivamente ARIMA del régimen (sentimiento no aplica).")
+
+        # Para el gráfico de contexto, mostramos el tramo del régimen
+        price_window = prices_df[(prices_df["timestamp"] >= r_start) & (prices_df["timestamp"] <= min(prices_df['timestamp'].max(), r_end))].copy()
+        news_window = pd.DataFrame()  # no aplica a pred futura por diseño
+
+        # Guardar en session para usar en tabs
+        st.session_state["__regime_target_ts__"] = target_ts
+        st.session_state["__regime_name__"]      = regime
+        st.session_state["__regime_bounds__"]    = (r_start, r_end)
+
+        # Sidebar footer
+        opened = st.session_state["opened_at_utc"]
+        st.sidebar.markdown(
+            f"""
+            <div class="sidebar-footer">
+                <div class="meta"><b>Abierto:</b> {opened:%Y-%m-%d %H:%M} UTC</div>
+                <div class="meta"><b>Régimen:</b> {regime} ({r_start:%Y-%m-%d} → {r_end:%Y-%m-%d})</div>
+                <div class="meta"><p></p></div>
+                <div class="disclaimer">{DISCLAIMER_TEXT}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
     st.sidebar.markdown("---")
     if st.sidebar.button("Actualizar datos", type="secondary",
-        help="Refresca la información si se actualizaron los CSV en data/processed (limpia caché y recarga)."
-        ):
+        help="Refresca la información si se actualizaron CSVs en data/processed (limpia caché y recarga)."):
         st.cache_data.clear()
         st.rerun()
 
-
-    # --- Convertir a timestamps (UTC) ---
-    start_ts = pd.Timestamp(start_date).tz_localize("UTC")
-    end_ts = pd.Timestamp(end_date).tz_localize("UTC") + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-
-
-    # --- Estado del dashboard y disclaimer ---
-    opened = st.session_state["opened_at_utc"]
-
-    st.sidebar.markdown(
-        f"""
-        <div class="sidebar-footer">
-            <div class="meta"><b>Abierto:</b> {opened:%Y-%m-%d %H:%M} UTC</div>
-            <div class="meta"><b>Datos hasta:</b> {max_ts:%Y-%m-%d %H:%M} UTC</div>
-            <div class="meta"><p></p></div>
-            <div class="disclaimer">{DISCLAIMER_TEXT}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # ------------------ Prepare data ------------------
-    price_window = prices_df[(prices_df["timestamp"] >= start_ts) & (prices_df["timestamp"] <= end_ts)].copy()
-    news_window = filter_news_timewindow(news_df, start_ts, end_ts)
-
-    if relevance:
-        news_window = default_relevance_filter(news_window)
-
+    # ------------------ Precio (OHLC o línea) ------------------
     price_pack = build_ohlc(price_window, interval=interval, min_points_per_candle=2)
 
-    # ------------------ Layout (Precio + Sentimiento) ------------------
     col_price, col_stats = st.columns([2, 1])
 
     with col_price:
         st.subheader("Precio BTC")
-
         if price_pack.mode in ("ohlc", "computed_ohlc") and not price_pack.ohlc.empty:
             chart = candlestick_chart(price_pack.ohlc, ts_col="timestamp").properties(height=380)
             st.altair_chart(chart, width='stretch')
@@ -389,271 +544,419 @@ def render_app():
                 chart = line_with_ma(non_null, ts_col="timestamp", price_col="price", ma_window=24).properties(height=380)
                 st.altair_chart(chart, width='stretch')
             else:
-                st.warning("No hay datos de precio disponibles en el rango seleccionado.")
+                st.warning("No hay datos de precio disponibles en el rango/regimen mostrado.")
 
+    # ------------------ Panel Sentimiento / Señal ------------------
     with col_stats:
         st.subheader("Sentimiento del mercado")
 
-        RECENT_HOURS = 48
-
-        if news_window.empty:
-            sentiment_score, sentiment_label, pos_hits, neg_hits = 0.0, "Neutral", 0, 0
-            used_scope = "sin Noticias"
-        else:
-            #Filtramos dentro de rango seleccioado
-            cutoff = end_ts - pd.Timedelta(hours=RECENT_HOURS)
-            news_recent = news_window[news_window["published_at"] >= cutoff].copy()
-
-            #Si no hay noticias en las ultimas N horas, cae en rango completo
-
-            if news_recent.empty:
-                news_recent = news_window
-                used_scope = f"rango completo (no hubo noticias en últimas {RECENT_HOURS}h)"
+        if mode == "Global":
+            RECENT_HOURS = 48
+            if news_window.empty:
+                sentiment_score, sentiment_label, pos_hits, neg_hits = 0.0, "Neutral", 0, 0
+                used_scope = "sin noticias"
             else:
-                used_scope = f"últimas {RECENT_HOURS}h"
+                cutoff = end_ts - pd.Timedelta(hours=RECENT_HOURS)
+                news_recent = news_window[news_window["published_at"] >= cutoff].copy()
+                used_scope = f"últimas {RECENT_HOURS}h" if not news_recent.empty else f"rango completo (no hubo noticias en últimas {RECENT_HOURS}h)"
+                if news_recent.empty:
+                    news_recent = news_window
 
-        # Calcular score agregado (preferimos 'sentiment_score' si existe)
+                if "sentiment_score" in news_recent.columns:
+                    s = pd.to_numeric(news_recent["sentiment_score"], errors="coerce").dropna()
+                    sentiment_score = float(s.mean()) if not s.empty else 0.0
+                    pos_hits = int((s > 0.05).sum())
+                    neg_hits = int((s < -0.05).sum())
 
-            if "sentiment_score" in news_recent.columns:
-                s = pd.to_numeric(news_recent["sentiment_score"], errors="coerce").dropna()
-
-                sentiment_score = float(s.mean()) if not s.empty else 0.0
-
-                pos_hits = int((s > 0.05).sum())
-                neg_hits = int((s < -0.05).sum())
-
-                if sentiment_score > 0.05:
-                    sentiment_label = "Positivo"
-                elif sentiment_score < -0.05:
-                    sentiment_label = "Negativo"
+                    # Etiqueta con umbral moderado (evitar falsas neutras)
+                    if sentiment_score > 0.05:
+                        sentiment_label = "Positivo"
+                    elif sentiment_score < -0.05:
+                        sentiment_label = "Negativo"
+                    else:
+                        sentiment_label = "Neutral"
                 else:
-                    sentiment_label = "Neutral"
-            else:
-                #Si no hay sentiment Score
-                sentiment_score, sentiment_label, pos_hits, neg_hits = quick_sentiment_score(news_recent)
+                    sentiment_score, sentiment_label, pos_hits, neg_hits = quick_sentiment_score(news_recent)
 
+            prob = int((sentiment_score + 1) * 50)
+            prob = max(0, min(100, prob))
+            st.metric("Sentimiento agregado", sentiment_label, f"{sentiment_score:+.2f}")
+            st.progress(prob)
+            st.caption(f"Probabilidad (escala interna): {prob}%")
+            st.caption(f"Hits → Positivos: {pos_hits} | Negativos: {neg_hits}")
+            st.caption(f"Ventana usada para el sentimiento: {used_scope}")
 
-        prob = int((sentiment_score + 1) * 50)
-        prob = max(0, min(100, prob))
+            # --- Señal final (Global) basada en predicción t+1 ---
+            last_series = price_window.dropna(subset=["price"])
+            last_price = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
+            last_seen_ts = last_series["timestamp"].max() if not last_series.empty else None
+            target_ts_g = (last_seen_ts + pd.Timedelta(hours=horizon_hours)) if last_seen_ts is not None else None
 
-        st.metric("Sentimiento agregado", sentiment_label, f"{sentiment_score:+.2f}")
-        st.progress(prob)
-        st.caption(f"Probabilidad (escala interna): {prob}%")
-        st.caption(f"Hits → Positivos: {pos_hits} | Negativos: {neg_hits}")
-        st.caption(f"Ventana usada para el sentimiento: {used_scope}")    
+            # Cargar predicciones
+            rf_df_sig = load_prediction_csv(str(RF_PRED_PATH), "y_pred_rf")
+            ar_df_sig = load_prediction_csv(str(ARIMA_PRED_PATH), "y_pred_arima")
 
-        st.subheader("Señal final")
-        if sentiment_score > 0.05:
-            final_label, color, conf = "SUBIDA", "green", prob
-        elif sentiment_score < -0.05:
-            final_label, color, conf = "BAJADA", "red", prob
+            pred_ar = None
+            pred_rf = None
+
+            if target_ts_g is not None:
+                # ARIMA exacto
+                if not ar_df_sig.empty and "timestamp" in ar_df_sig.columns:
+                    row = ar_df_sig[ar_df_sig["timestamp"] == target_ts_g]
+                    if row.empty:
+                        # fallback: fila más cercana
+                        nearest = _nearest_row_by_ts(ar_df_sig, target_ts_g)
+                        if nearest is not None and pd.notna(nearest.get("y_pred_arima")):
+                            pred_ar = float(nearest["y_pred_arima"])
+                    else:
+                        if pd.notna(row["y_pred_arima"].iloc[0]):
+                            pred_ar = float(row["y_pred_arima"].iloc[0])
+
+                # RF exacto
+                if not rf_df_sig.empty and "timestamp" in rf_df_sig.columns:
+                    row = rf_df_sig[rf_df_sig["timestamp"] == target_ts_g]
+                    if row.empty:
+                        nearest = _nearest_row_by_ts(rf_df_sig, target_ts_g)
+                        if nearest is not None and pd.notna(nearest.get("y_pred_rf")):
+                            pred_rf = float(nearest["y_pred_rf"])
+                    else:
+                        if pd.notna(row["y_pred_rf"].iloc[0]):
+                            pred_rf = float(row["y_pred_rf"].iloc[0])
+
+            # Prioridad: ARIMA si existe; si no, RF; si no, neutral
+            pred_used = pred_ar if pred_ar is not None else pred_rf
+
+            final_label, color, delta = _direction_from_pred(last_price, pred_used)
+            
+            # Si NO hay predicción técnica disponible, usar sentimiento como fallback
+            if pred_used is None:
+                if sentiment_score > 0.05:
+                    final_label, color = "SUBIDA", "green"
+                elif sentiment_score < -0.05:
+                    final_label, color = "BAJADA", "red"
+                else:
+                    final_label, color = "ESCENARIO NEUTRAL", "gray"
+
+            # Si ARIMA y RF discrepan, usa sentimiento como desempate (opcional)
+            if pred_ar is not None and pred_rf is not None and last_price is not None:
+                dir_ar, _, _ = _direction_from_pred(last_price, pred_ar)
+                dir_rf, _, _ = _direction_from_pred(last_price, pred_rf)
+                if dir_ar != dir_rf:
+                    if sentiment_score > 0.05:
+                        final_label, color = "SUBIDA", "green"
+                    elif sentiment_score < -0.05:
+                        final_label, color = "BAJADA", "red"
+                    else:
+                        final_label, color = "ESCENARIO NEUTRAL", "gray"
+
+            st.subheader("Señal final")
+            st.markdown(f"<h3 style='color:{color}; margin:0'>{final_label}</h3>", unsafe_allow_html=True)
+            st.progress(prob)
+
+            if debug_mode:
+                with st.expander("Detalles técnicos (debug)", expanded=False):
+                    if target_ts_g is not None:
+                        st.write(f"t: {last_seen_ts:%Y-%m-%d %H:%M} UTC → t+1: {target_ts_g:%Y-%m-%d %H:%M} UTC")
+                    if last_price is not None and pred_used is not None and delta is not None:
+                        st.write(f"Base: {last_price:,.2f} → Pred: {pred_used:,.2f} (Δ {delta:+.2%})")
+                    else:
+                        st.write("No hay predicción disponible para t+1 (faltan CSVs o fila exacta).")
+
         else:
-            final_label, color, conf = "ESCENARIO NEUTRAL", "gray", prob
+            # Regímenes: sentimiento no aplica a pred futura — mostrar ARIMA
+            target_ts = st.session_state.get("__regime_target_ts__")
+            regime    = st.session_state.get("__regime_name__")
+            st.info("En modo Regímenes la señal no usa noticias; se basa en ARIMA del régimen.")
 
-        st.markdown(f"<h3 style='color:{color}; margin:0'>{final_label}</h3>", unsafe_allow_html=True)
-        st.progress(conf)
+            final_label, color = "ESCENARIO NEUTRAL", "gray"
+
+            # Mostrar dirección aproximada con base en ARIMA del régimen en el panel
+            ar_reg = load_prediction_csv(str(ARIMA_PRED_REG_PATH), "y_pred_arima")
+
+            # Precio base: último observado del tramo mostrado
+            last_series = price_window.dropna(subset=["price"]).sort_values("timestamp")
+            base_ref = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
+
+            y_ar = None
+
+
+            # 1) Si hay predicciones por régimen, intentar exacta o nearest
+            if target_ts is not None and not ar_reg.empty and "regime" in ar_reg.columns and "timestamp" in ar_reg.columns:
+                preds_reg = ar_reg[ar_reg["regime"] == regime].copy()
+
+                row = preds_reg[preds_reg["timestamp"] == target_ts]
+                if not row.empty and pd.notna(row["y_pred_arima"].iloc[0]):
+                    y_ar = float(row["y_pred_arima"].iloc[0])
+                else:
+                    nearest = _nearest_row_by_ts(preds_reg, target_ts)
+                    if nearest is not None and pd.notna(nearest.get("y_pred_arima")):
+                        y_ar = float(nearest["y_pred_arima"])
+
+            # 2) Dirección desde ARIMA si existe
+            if base_ref is not None and y_ar is not None:
+                if y_ar > base_ref:
+                    final_label, color = "SUBIDA", "green"
+                elif y_ar < base_ref:
+                    final_label, color = "BAJADA", "red"
+                else:
+                    final_label, color = "ESCENARIO NEUTRAL", "gray"
+            else:
+                # 3) Fallback final (si no hay predicciones): tendencia reciente
+                if len(last_series) >= 2 and base_ref is not None:
+                    prev_ref = float(last_series.iloc[-2]["price"])
+                    if base_ref > prev_ref:
+                        final_label, color = "SUBIDA", "green"
+                    elif base_ref < prev_ref:
+                        final_label, color = "BAJADA", "red"
+
+            # ✅ SIEMPRE mostrar Señal final en Regímenes
+            st.subheader("Señal final")
+            st.markdown(f"<h3 style='color:{color}; margin:0'>{final_label}</h3>", unsafe_allow_html=True)
+            st.progress(100 if color != "gray" else 50)
+
+            # Debug opcional (solo si activas el toggle)
+            if debug_mode:
+                with st.expander("Detalles técnicos (debug)", expanded=False):
+                    st.write({"regime": regime, "target_ts": str(target_ts)})
+                    st.write({"base_ref": base_ref, "y_pred_arima": y_ar})
 
     st.divider()
 
     # ------------------ Tabs ------------------
     tab_signal, tab_context, tab_method, tab_details = st.tabs(["Señal & Predicción", "Contexto", "Metodología", "Detalles"])
 
+    # --------- Tab Contexto ---------
     with tab_context:
         st.subheader("Noticias filtradas")
-        st.caption(f"Registros: {len(news_window)}")
-        st.caption(f"💡 La señal resume el sentimiento de las noticias más recientes dentro del rango elegido, para evitar diluir análisis; el rango completo se usa para contexto.")
-
-        if not news_window.empty:
-            st.dataframe(news_window[["published_at", "source", "axis", "title"]].head(200), width='stretch')
-            csv_bytes = news_window.to_csv(index=False).encode("utf-8")
-            st.download_button("Descargar CSV", csv_bytes, "news_filtered.csv", "text/csv")
+        if mode == "Global":
+            st.caption(f"Registros: {len(news_window)}")
+            st.caption("💡 La señal resume el sentimiento de las noticias más recientes dentro del rango elegido.")
+            if not news_window.empty:
+                st.dataframe(news_window[["published_at", "source", "axis", "title"]].head(200), width='stretch')
+                csv_bytes = news_window.to_csv(index=False).encode("utf-8")
+                st.download_button("Descargar CSV", csv_bytes, "news_filtered.csv", "text/csv")
+            else:
+                st.info("No hay noticias para mostrar en el rango.")
         else:
-            st.info("No hay noticias para mostrar.")
+            st.info("En modo Regímenes, las noticias no aplican a la predicción futura.")
 
+    # --------- Tab Señal & Predicción ---------
     with tab_signal:
         st.subheader("Predicción")
-        st.caption("Se integran dos salidas (exportadas a CSV) - Modelos Random Forest y ARIMA/SARIMA")
+        st.caption("Se integran salidas exportadas a CSV: Random Forest y/o ARIMA. En Regímenes solo se usa ARIMA del régimen.")
 
-        rf_df = load_prediction_csv(str(RF_PRED_PATH), "y_pred_rf")
-        arima_df = load_prediction_csv(str(ARIMA_PRED_PATH), "y_pred_arima")
+        # Carga flexible
+        rf_df   = load_prediction_csv(str(RF_PRED_PATH), "y_pred_rf")
+        ar_df   = load_prediction_csv(str(ARIMA_PRED_PATH), "y_pred_arima")
+        rf_reg  = load_prediction_csv(str(RF_PRED_REG_PATH), "y_pred_rf")
+        ar_reg  = load_prediction_csv(str(ARIMA_PRED_REG_PATH), "y_pred_arima")
 
-        if rf_df.empty and arima_df.empty:
-            st.info(
-                "En esta versión, la pestaña es informativa. "
-                "Cuando existan los CSV en data/processed/, se mostrará aquí las curvas y la dirección final."
-            )
-        else:
-            # Merge outer por timestamp
-            if not rf_df.empty and not arima_df.empty:
-                pred_df = pd.merge(rf_df, arima_df, on="timestamp", how="outer")
+        if mode == "Regímenes (Halvings)":
+            target_ts = st.session_state.get("__regime_target_ts__")
+            regime    = st.session_state.get("__regime_name__")
 
-                # Consolidar y_true si viene duplicado
-                if "y_true_x" in pred_df.columns or "y_true_y" in pred_df.columns:
-                    pred_df["y_true"] = pred_df.get("y_true_x")
-                    if "y_true_y" in pred_df.columns:
-                        pred_df["y_true"] = pred_df["y_true"].fillna(pred_df["y_true_y"])
-                    pred_df = pred_df.drop(columns=[c for c in ["y_true_x", "y_true_y"] if c in pred_df.columns])
+            if ar_reg.empty or "regime" not in ar_reg.columns:
+                st.info("No se encontraron predicciones ARIMA por régimen.")
             else:
-                pred_df = rf_df if not rf_df.empty else arima_df
-
-            pred_df = pred_df.sort_values("timestamp")
-
-            # Filtrar mismo rango
-            pred_window = pred_df[(pred_df["timestamp"] >= start_ts) & (pred_df["timestamp"] <= end_ts)].copy()
-
-            if pred_window.empty:
-                st.warning("Hay predicciones, pero no hay registros dentro del rango de fechas seleccionado.")
-            else:
-                # --- Next horizon (t+1) ---
-                st.markdown(f"### ⏭️ Predicción  — siguiente {interval} (+{horizon_hours}h)")
-
-                last_price_series = price_window.dropna(subset=["price"])
-                if last_price_series.empty:
-                    st.info("No hay precio disponible para calcular el timestamp objetivo (t+1).")
+                preds = ar_reg[ar_reg["regime"] == regime].copy()
+                if preds.empty:
+                    st.warning(f"No hay predicciones ARIMA para el régimen {regime}.")
                 else:
-                    last_seen_ts = last_price_series["timestamp"].max()
-                    target_ts = last_seen_ts + pd.Timedelta(hours=horizon_hours)
-
-                    st.caption(f"Base (último dato): {last_seen_ts:%Y-%m-%d %H:%M} UTC → Objetivo: {target_ts:%Y-%m-%d %H:%M} UTC")
-
-                    row_next = pred_df[pred_df["timestamp"] == target_ts]
-
+                    row_next = preds[preds["timestamp"] == target_ts]
                     if row_next.empty:
-                        st.info(f"Aún no existe una fila de predicción exactamente para el siguiente {interval} (t+1).")
+                        st.warning(f"No existe una fila de predicción exactamente para {target_ts:%Y-%m-%d %H:%M} UTC en el régimen {regime}.")
                     else:
-                        last_price = float(last_price_series.iloc[-1]["price"])
+                        # Mostrar métricas y dirección usando SOLO ARIMA
+                        last_series = price_window.dropna(subset=["price"])
+                        last_price = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
 
-                        rf_val = row_next["y_pred_rf"].iloc[0] if "y_pred_rf" in row_next.columns else None
-                        ar_val = row_next["y_pred_arima"].iloc[0] if "y_pred_arima" in row_next.columns else None
+                        y_true  = float(row_next["y_true"].iloc[0]) if "y_true" in row_next.columns and pd.notna(row_next["y_true"].iloc[0]) else None
+                        y_ar    = float(row_next["y_pred_arima"].iloc[0]) if pd.notna(row_next["y_pred_arima"].iloc[0]) else None
 
                         c1, c2, c3 = st.columns(3)
-                        c1.metric("Último precio observado (t)", f"{last_price:,.2f}")
-                        c2.metric(f"RF pred (t+1)", f"{rf_val:,.2f}" if rf_val is not None and pd.notna(rf_val) else "N/A")
-                        c3.metric(f"ARIMA/SARIMA pred (t+1)", f"{ar_val:,.2f}" if ar_val is not None and pd.notna(ar_val) else "N/A")
+                        c1.metric("Régimen", regime)
+                        if last_price is not None:
+                            c2.metric("Último precio observado (t)", f"{last_price:,.2f}")
+                        c3.metric("ARIMA (t objetivo)", f"{y_ar:,.2f}" if y_ar is not None else "N/A")
 
-                        directions = []
-                        if rf_val is not None and pd.notna(rf_val):
-                            directions.append("up" if rf_val > last_price else "down" if rf_val < last_price else "flat")
-                        if ar_val is not None and pd.notna(ar_val):
-                            directions.append("up" if ar_val > last_price else "down" if ar_val < last_price else "flat")
+                        direction = None
+                        base_ref  = last_price if last_price is not None else y_true
+                        if y_ar is not None and base_ref is not None:
+                            if y_ar > base_ref: direction = "SUBIDA"
+                            elif y_ar < base_ref: direction = "BAJADA"
+                            else: direction = "NEUTRAL"
 
-                        if len(directions) >= 2 and directions[0] == directions[1] and directions[0] != "flat":
-                            st.success("✅ Ambos modelos coinciden en la dirección (mayor confianza).")
-                        elif len(directions) >= 2 and directions[0] != directions[1]:
-                            st.warning("⚠️ Los modelos discrepan en dirección (señal mixta).")
+                        if direction:
+                            st.success(f"Dirección ARIMA (régimen {regime}): **{direction}**")
                         else:
-                            st.info("ℹ️ Solo hay salida de un modelo disponible por ahora.")
+                            st.info("No fue posible determinar la dirección (faltan valores).")
 
-                # --- Plot ---
-                st.markdown("### 📈 Observed vs Predicted")
-                plot_df = pred_window.set_index("timestamp")
-                cols = []
-                if "y_true" in plot_df.columns:
-                    cols.append("y_true")
-                if "y_pred_rf" in plot_df.columns:
-                    cols.append("y_pred_rf")
-                if "y_pred_arima" in plot_df.columns:
-                    cols.append("y_pred_arima")
+                        # Plot de vecindario temporal
+                        window = preds.set_index("timestamp").sort_index()
+                        lo, hi = target_ts - pd.Timedelta(days=7), target_ts + pd.Timedelta(days=7)
+                        win = window[(window.index >= lo) & (window.index <= hi)]
+                        if not win.empty:
+                            cols = []
+                            if "y_true" in win.columns: cols.append("y_true")
+                            if "y_pred_arima" in win.columns: cols.append("y_pred_arima")
+                            st.line_chart(win[cols])
 
-                if not cols:
-                    st.info("No se encontraron columnas de predicción para graficar.")
+        else:
+            # Modo Global — merge y t+1 desde último dato
+            if rf_df.empty and ar_df.empty:
+                st.info("Aún no hay CSVs de predicción en data/processed/.")
+            else:
+                # Merge outer
+                if not rf_df.empty and not ar_df.empty:
+                    pred_df = pd.merge(rf_df, ar_df, on="timestamp", how="outer")
+                    if "y_true_x" in pred_df.columns or "y_true_y" in pred_df.columns:
+                        pred_df["y_true"] = pred_df.get("y_true_x")
+                        if "y_true_y" in pred_df.columns:
+                            pred_df["y_true"] = pred_df["y_true"].fillna(pred_df["y_true_y"])
+                        pred_df = pred_df.drop(columns=[c for c in ["y_true_x", "y_true_y"] if c in pred_df.columns])
                 else:
-                    st.line_chart(plot_df[cols])
+                    pred_df = rf_df if not rf_df.empty else ar_df
 
-                # --- Table + download ---
-                st.markdown("### 📄 Predicciones (tabla)")
-                st.dataframe(pred_window.head(200), width='stretch')
+                pred_df = pred_df.sort_values("timestamp")
 
-                csv_bytes = pred_window.to_csv(index=False).encode("utf-8")
-                st.download_button("Descargar predicciones (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv")
+                # Filtrar mismo rango de vista
+                pred_window = pred_df[(pred_df["timestamp"] >= start_ts) & (pred_df["timestamp"] <= end_ts)].copy()
+                if pred_window.empty:
+                    st.warning("Hay predicciones, pero no hay registros dentro del rango de fechas seleccionado.")
+                else:
+                    st.markdown(f"### ⏭️ Predicción — siguiente {interval} (+{horizon_hours}h)")
+                    last_series = price_window.dropna(subset=["price"])
+                    if last_series.empty:
+                        st.info("No hay precio disponible para calcular el timestamp objetivo (t+1).")
+                    else:
+                        last_seen_ts = last_series["timestamp"].max()
+                        target_ts_g  = last_seen_ts + pd.Timedelta(hours=horizon_hours)
+                        st.caption(f"Base (último dato): {last_seen_ts:%Y-%m-%d %H:%M} UTC → Objetivo: {target_ts_g:%Y-%m-%d %H:%M} UTC")
 
-    with tab_details:
-        st.subheader("Resumen de datos")
-        st.write({
-            "fuente": "processed" if (price_path == PRICE_PROCESSED_PATH) else "raw(test)",
-            "rows_prices": int(len(price_window)),
-            "rows_news": int(len(news_window)),
-            "sources_unicas": int(news_window["source"].nunique()) if not news_window.empty else 0
-        })
+                        row_next = pred_df[pred_df["timestamp"] == target_ts_g]
+                        if row_next.empty:
+                            st.info(f"Aún no existe una fila de predicción exactamente para el siguiente {interval} (t+1).")
+                        else:
+                            last_price = float(last_series.iloc[-1]["price"])
+                            rf_val = row_next["y_pred_rf"].iloc[0]     if "y_pred_rf" in row_next.columns else None
+                            ar_val = row_next["y_pred_arima"].iloc[0] if "y_pred_arima" in row_next.columns else None
 
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("Último precio observado (t)", f"{last_price:,.2f}")
+                            c2.metric("RF pred (t+1)",    f"{rf_val:,.2f}" if rf_val is not None and pd.notna(rf_val) else "N/A")
+                            c3.metric("ARIMA pred (t+1)", f"{ar_val:,.2f}" if ar_val is not None and pd.notna(ar_val) else "N/A")
 
+                            directions = []
+                            if ar_val is not None and pd.notna(ar_val):
+                                directions.append("up" if ar_val > last_price else "down" if ar_val < last_price else "flat")
+                            if rf_val is not None and pd.notna(rf_val):
+                                directions.append("up" if rf_val > last_price else "down" if rf_val < last_price else "flat")
+
+                            if len(directions) >= 2 and directions[0] == directions[1] and directions[0] != "flat":
+                                st.success("✅ Ambos modelos coinciden en la dirección (mayor confianza).")
+                            elif len(directions) >= 2 and directions[0] != directions[1]:
+                                st.warning("⚠️ Los modelos discrepan en dirección (señal mixta).")
+                            else:
+                                st.info("ℹ️ Solo hay salida de un modelo disponible por ahora.")
+
+                    # Plot & table
+                    st.markdown("### 📈 Observed vs Predicted")
+                    plot_df = pred_window.set_index("timestamp")
+                    cols = []
+                    if "y_true" in plot_df.columns:       cols.append("y_true")
+                    if "y_pred_rf" in plot_df.columns:    cols.append("y_pred_rf")
+                    if "y_pred_arima" in plot_df.columns: cols.append("y_pred_arima")
+                    if cols:
+                        st.line_chart(plot_df[cols])
+                    else:
+                        st.info("No se encontraron columnas de predicción para graficar.")
+
+                    st.markdown("### 📄 Predicciones (tabla)")
+                    st.dataframe(pred_window.head(200), width='stretch')
+                    csv_bytes = pred_window.to_csv(index=False).encode("utf-8")
+                    st.download_button("Descargar predicciones (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv")
+
+    # --------- Tab Methodología (EDA) ---------
     with tab_method:
         st.subheader("Metodología (resumen)")
+        df = price_window.dropna(subset=["price"]).copy().sort_values("timestamp")
 
-        if price_window.empty or "timestamp" not in price_window.columns or "price" not in price_window.columns:
-            st.info("No hay datos suficientes para mostrar metodología en el rango seleccionado.")
+        if df.empty or "timestamp" not in df.columns or "price" not in df.columns:
+            st.info("No hay datos suficientes para mostrar metodología en el rango/regimen.")
         else:
-            df = price_window.dropna(subset=["price"]).copy().sort_values("timestamp")
             s = df.set_index("timestamp")["price"].astype(float)
-
             st.markdown("### Serie de precio")
             st.line_chart(s)
 
             st.markdown("### Retornos (log) y volatilidad")
-            # log-returns sin numpy
             log_s = s.apply(lambda x: math.log(x) if x > 0 else float("nan"))
             rets = log_s.diff().dropna()
-
-            st.caption("Retornos log (%) — visión estándar en finanzas.")
+            st.caption("Retornos log (%)")
             st.line_chart((rets * 100).rename("log_return_%"))
-
-            st.caption("Volatilidad rolling (24 pasos) sobre retornos log.")
+            st.caption("Volatilidad rolling (24 pasos) sobre retornos log (√24).")
             vol = rets.rolling(24).std() * (24 ** 0.5)
             st.line_chart(vol.dropna().rename("vol_24"))
 
+            # EDA de Sentimiento solo en Global
+            if mode == "Global" and not news_window.empty:
+                st.divider()
+                st.markdown("### EDA de Sentimiento (Global)")
+                if "sentiment_score" in news_window.columns:
+                    snt = pd.to_numeric(news_window["sentiment_score"], errors="coerce").dropna()
+                    st.write({
+                        "mean": float(snt.mean()),
+                        "median": float(snt.median()),
+                        "std": float(snt.std()),
+                        "pos(>0.05)": int((snt > 0.05).sum()),
+                        "neg(<-0.05)": int((snt < -0.05).sum()),
+                        "n": int(len(snt)),
+                    })
+                else:
+                    st.info("No se encontró columna 'sentiment_score' en noticias.")
+
             st.divider()
-            st.markdown("### Hallazgos del EDA (Notebook)")
+            st.markdown("### Hallazgos (resumen)")
             st.write(
-                "- La serie requiere diferenciación para estacionariedad (d≈1 en el análisis del notebook).\n"
-                "- No se detecta estacionalidad fuerte (en el notebook se considera débil y se recomienda ARIMA baseline).\n"
-                "- Se sugiere ARIMA como baseline y comparar con modelos alternativos."
+                "- La serie de precio requiere diferenciación (d≈1) para estacionariedad.\n"
+                "- Estacionalidad débil; ARIMA/SARIMA es baseline razonable.\n"
+                "- En modo Regímenes, cada modelo se entrena con su subperiodo (estacionalidad no compartida)."
             )
 
-        nb_path = ROOT_PATH / "notebooks" / "eda_time_series.ipynb"
-        if nb_path.exists():
-            st.caption("Notebook completo disponible en: `notebooks/eda_time_series.ipynb`")
-        else:
-            st.caption("Notebook se integrará en `main` como: `notebooks/eda_time_series.ipynb`")
+    # --------- Tab Detalles ---------
+    with tab_details:
+        st.subheader("Resumen de datos")
+        fuente = "processed" if (price_path == PRICE_PROCESSED_PATH) else "raw(test)"
+        rows_news = int(len(news_window)) if mode == "Global" else 0
+        sources = int(news_window["source"].nunique()) if (mode == "Global" and not news_window.empty and "source" in news_window.columns) else 0
 
+        st.write({
+            "fuente": fuente,
+            "rows_prices": int(len(price_window)),
+            "rows_news": rows_news,
+            "sources_unicas": sources
+        })
 
 # ------------------ Top nav (streamlit-option-menu) ------------------
-
 manual = st.session_state.get("nav_manual_select", None)
-
 selected = option_menu(
     menu_title=None,
-    options=["Home", "Overview", "Dashboard"],
-    icons=["house", "card-text", "graph-up"],   # Bootstrap icon names
+    options=["Home", "Overview", "Dashboard", "Recomendaciones"],
+    icons=["house", "card-text", "graph-up", "lightbulb"],
     default_index=0 if manual is None else manual,
     orientation="horizontal",
     manual_select=manual,
     styles={
-        "container": {
-            "padding": "0.2rem 0.2rem",
-            "background-color": "#0b1120",
-        },
+        "container": {"padding": "0.2rem 0.2rem", "background-color": "#0b1120"},
         "icon": {"color": "#e5e7eb", "font-size": "16px"},
-        "nav-link": {
-            "font-size": "14px",
-            "text-align": "center",
-            "margin": "0px 6px",
-            "color": "#94a3b8",
-            "border-radius": "10px",
-            "padding": "6px 12px",
-        },
-        "nav-link-selected": {
-            "background-color": "#111827",
-            "color": "#e5e7eb",
-        },
+        "nav-link": {"font-size": "14px", "text-align": "center", "margin": "0px 6px",
+                     "color": "#94a3b8", "border-radius": "10px", "padding": "6px 12px"},
+        "nav-link-selected": {"background-color": "#111827", "color": "#e5e7eb"}
     },
 )
 
-#----- Oculta sidebar en Home/Overview -----
 if selected in ("Home", "Overview"):
     st.markdown("<style>section[data-testid='stSidebar']{display:none;}</style>", unsafe_allow_html=True)
 
-
-# Limpia manual_select después de aplicarlo (para no “forzar” siempre)
 if manual is not None:
     st.session_state["nav_manual_select"] = None
 
@@ -661,5 +964,8 @@ if selected == "Home":
     render_home()
 elif selected == "Overview":
     render_overview()
-else:
+elif selected == "Dashboard":
     render_app()
+elif selected == "Recomendaciones":
+    render_recommendations()
+
