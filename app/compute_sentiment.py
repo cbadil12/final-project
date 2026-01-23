@@ -1,4 +1,5 @@
-# app/04_sentiment.py
+# app/compute_sentiment.py
+
 # ===============================
 # IMPORTS
 # ===============================
@@ -19,9 +20,9 @@ import numpy as np
 # ===============================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-INPUT_PATH = 'data/processed/unified_noticias_nlp_ready.csv'
-OUTPUT_DIR = 'data/processed/'
-OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'news_with_sentiment.csv')
+INPUT_PATH_TEST = 'data/raw/news_raw.csv'
+OUTPUT_DIR_TEST = 'data/interim/'
+OUTPUT_PATH_TEST = os.path.join(OUTPUT_DIR_TEST, 'news_with_sentiment.csv')
 
 # Model configuration
 FINBERT_MODEL = 'ProsusAI/finbert'
@@ -74,14 +75,12 @@ def get_finbert_score(texts, finbert):
             label = res['label']
             score = res['score']
             
-            # --- CORRECCIÓN LÓGICA ---
             if label == 'positive':
                 scores.append(score)
             elif label == 'negative':
                 scores.append(-score)
-            else: # neutral
-                scores.append(0.0) # El neutral DEBE ser 0.0
-            # --------------------------
+            else:  # neutral
+                scores.append(0.0)
                 
         return scores
     except Exception as e:
@@ -91,14 +90,17 @@ def get_finbert_score(texts, finbert):
 # ===============================
 # MAIN SENTIMENT ANALYSIS
 # ===============================
-def run_sentiment_analysis():
-    if not os.path.exists(INPUT_PATH):
-        logging.error(f"Input file not found: {INPUT_PATH}")
-        return
+def run_sentiment_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Computes sentiment on input DataFrame.
+    Assumes 'text_nlp' column exists; builds if not.
+    Returns df with added sentiment scores (no save).
+    """
+    if df.empty:
+        logging.warning("Empty input DataFrame")
+        return df
     
-    # Load data
-    df = pd.read_csv(INPUT_PATH)
-    logging.info(f"Loaded {len(df)} articles for sentiment analysis")
+    logging.info(f"Processing {len(df)} articles for sentiment analysis")
     
     # Ensure text_nlp is string and clean
     if 'text_nlp' not in df.columns:
@@ -136,12 +138,7 @@ def run_sentiment_analysis():
     df['sentiment_score'] = (df['finbert_score'] * 0.7) + (df['vader_score'] * 0.3)
     df['sentiment_score'] = df['sentiment_score'].clip(-1, 1)
     
-    # Save
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    df.to_csv(OUTPUT_PATH, index=False)
-    logging.info(f"Sentiment analysis completed. Saved to {OUTPUT_PATH}")
-    
-    # Final stats
+    # Final stats (log only, no save)
     logging.info("Final sentiment stats:")
     logging.info(f"  Mean sentiment: {df['sentiment_score'].mean():.4f}")
     logging.info(f"  Std sentiment:  {df['sentiment_score'].std():.4f}")
@@ -155,4 +152,19 @@ def run_sentiment_analysis():
 # ENTRY POINT
 # ===============================
 if __name__ == "__main__":
-    run_sentiment_analysis()
+    # This part ONLY runs when you execute this file directly
+    if os.path.exists(INPUT_PATH_TEST):
+        print("--- STANDALONE TEST START ---")
+        df_test = pd.read_csv(INPUT_PATH_TEST)
+        
+        # Run the modular function
+        df_result = run_sentiment_analysis(df_test)
+        
+        # MANUAL SAVE: Uncomment these 2 lines if you want to save the CSV during your tests
+        # os.makedirs(OUTPUT_DIR_TEST, exist_ok=True)
+        # df_result.to_csv(OUTPUT_PATH_TEST, index=False)
+        
+        print(f"Test finished. Articles processed: {len(df_result)}")
+        print("--- STANDALONE TEST END ---")
+    else:
+        print(f"❌ Test file not found at: {INPUT_PATH_TEST}")

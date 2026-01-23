@@ -1,4 +1,4 @@
-# app/02_kaggle_loader.py
+# app/legacy_kaggle_loader.py
 # ===============================
 # IMPORTS
 # ===============================
