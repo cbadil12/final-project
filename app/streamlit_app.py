@@ -12,6 +12,11 @@ from streamlit_option_menu import option_menu
 import pandas as pd
 import math
 
+try:
+    from src.backend.dynamic_predict import run_dynamic_predict
+except Exception:
+    run_dynamic_predict = None
+
 # ------------------ Paths base ------------------
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
@@ -22,6 +27,10 @@ ASSETS_DIR = ROOT_PATH / "assets"
 RAW_DIR = ROOT_PATH / "data" / "raw"
 PROCESSED_DIR = ROOT_PATH / "data" / "processed"
 
+BACKEND_DIR = os.path.join(ROOT, "src", "backend")
+if BACKEND_DIR not in sys.path:
+    sys.path.append(BACKEND_DIR)
+
 # Helpers de frontend
 from src.frontend.data_loader import (
     load_prices, build_ohlc, load_news, filter_news_timewindow,
@@ -30,20 +39,25 @@ from src.frontend.data_loader import (
 from src.frontend.ui_components import candlestick_chart, line_with_ma
 
 # ------------------ Files esperados ------------------
-# raw (demo/fallback)
-PRICE_TEST_PATH = RAW_DIR / "prices_raw_1h.csv"
-NEWS_TEST_PATH  = RAW_DIR / "news_with_sentiment.csv"
+# raw (fuentes base)
+PRICE_1H_RAW_PATH = RAW_DIR / "btcusd-1h.csv"
+PRICE_4H_RAW_PATH = RAW_DIR / "btcusd-4h.csv"
+NEWS_RAW_PATH     = RAW_DIR / "news_raw.csv"
+FNG_RAW_PATH      = RAW_DIR / "fear_greed.csv"
 
-# processed (pipeline ideal)
-PRICE_PROCESSED_PATH = PROCESSED_DIR / "prices_raw.csv"
-NEWS_PROCESSED_PATH  = PROCESSED_DIR / "news_raw.csv"
+# processed (datasets con features + targets para modelos sentimiento)
+DATASET_SENT_1H_PATH = PROCESSED_DIR / "dataset_sentiment_target_1h.csv"
+DATASET_SENT_4H_PATH = PROCESSED_DIR / "dataset_sentiment_target_4h.csv"
 
-# predictions (pipeline outputs)
-RF_PRED_PATH    = PROCESSED_DIR / "predictions_rf.csv"
-ARIMA_PRED_PATH = PROCESSED_DIR / "predictions_arima.csv"
+# predictions (outputs sentimiento)
+PRED_RF_1H_PATH  = PROCESSED_DIR / "predictions_rf_clf_1h.csv"
+PRED_RF_4H_PATH  = PROCESSED_DIR / "predictions_rf_clf_4h.csv"
+PRED_XGB_1H_PATH = PROCESSED_DIR / "predictions_xgb_clf_1h.csv"
+PRED_XGB_4H_PATH = PROCESSED_DIR / "predictions_xgb_clf_4h.csv"
 
-RF_PRED_REG_PATH    = PROCESSED_DIR / "predictions_rf_regimes.csv"
-ARIMA_PRED_REG_PATH = PROCESSED_DIR / "predictions_arima_regimes.csv"
+# (opcional) dataset “solo sentimiento”
+SENTIMENT_ONLY_1H_PATH = PROCESSED_DIR / "sentiment_only_1h.csv"
+
 
 # ------------------ Funciones de utilidad ------------------
 def _asset_to_data_uri(path: Path) -> str | None:
@@ -54,19 +68,48 @@ def _asset_to_data_uri(path: Path) -> str | None:
     return f"data:{mime};base64,{b64}"
 
 @st.cache_data(show_spinner=False)
-def _load_prices_cached(path_str: str) -> pd.DataFrame:
-    return load_prices(path_str)
-
-@st.cache_data(show_spinner=False)
 def _load_news_cached(path_str: str) -> pd.DataFrame:
     return load_news(path_str)
 
-def _pick_data_paths(prefer_processed: bool) -> tuple[Path, Path]:
-    """Selecciona archivos processed si existen; si no, usa raw (fallback demo)."""
-    if prefer_processed and PRICE_PROCESSED_PATH.exists() and NEWS_PROCESSED_PATH.exists():
-        return PRICE_PROCESSED_PATH, NEWS_PROCESSED_PATH
-    return PRICE_TEST_PATH, NEWS_TEST_PATH
+@st.cache_data(show_spinner=False)
+def _load_prices_compat(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    
+    # Caso A: btcusd-1h.csv (datetime, open, high, low, close, volume)
+    if "datetime" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
+        df["price"] = pd.to_numeric(df.get("close"), errors="coerce")
+        return df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    
+    # Caso B: btcusd-4h.csv separado por ;
+    if df.shape[1] == 1 and isinstance(df.iloc[0,0], str) and ";" in df.iloc[0,0]:
+        df = pd.read_csv(path, sep=";", header=None)
+        df.columns = ["date", "time", "open", "high", "low", "close", "volume"]
+        df["timestamp"] = pd.to_datetime(df["date"] + " " + df["time"], dayfirst=True, utc=True, errors="coerce")
+        df["price"] = pd.to_numeric(df["close"], errors="coerce")
+        return df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    
+    # Caso C: fallback a loader original
+    return load_prices(path)
 
+@st.cache_data(show_spinner=False)
+def _run_dynamic_predict_cached(
+    target_ts_str: str,
+    resolution: str,
+    mode: str = "auto",
+    window_hours: int = 24,
+    model_name: str = "xgb_clf"
+):
+    if run_dynamic_predict is None:
+        return {"msg": "dynamic_predict no disponible", "prediction": None, "confidence": 0.0}
+    
+    return run_dynamic_predict(
+        target_ts=target_ts_str,
+        resolution=resolution,
+        mode=mode,
+        window_hours=window_hours,
+        model_name=model_name
+    )
 # ------------------ Config Streamlit ------------------
 st.set_page_config(page_title='BTC Predictor', page_icon='📈', layout='wide')
 
@@ -168,14 +211,12 @@ def bounds_for_regime(name: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
     return None
 
 def round_down_to_interval(ts: pd.Timestamp, interval: str) -> pd.Timestamp:
-    """Alinea target_ts al borde inferior del intervalo (1h, 4h, 1d)."""
+    """Alinea target_ts al borde inferior del intervalo (1h, 4h)."""
     if interval == "1h":
         return ts.replace(minute=0, second=0, microsecond=0)
     if interval == "4h":
         hr = (ts.hour // 4) * 4
         return ts.replace(hour=hr, minute=0, second=0, microsecond=0)
-    if interval == "1d":
-        return ts.normalize()
     return ts
 
 
@@ -276,7 +317,7 @@ BTC Predictor permite dos enfoques de análisis complementarios:
 #### **1. Modo Global**
 Analiza un rango seleccionado por el usuario y construye:
 
-- Precio histórico (1h / 4h / 1d) con resampling OHLC  
+- Precio histórico (1h / 4h) con resampling OHLC  
 - Noticias filtradas por relevancia  
 - Sentimiento agregado en ventanas recientes  
 - **Predicción técnica t+1** (Random Forest y ARIMA global)
@@ -386,23 +427,29 @@ def render_app():
     )
 
     # Granularidad
+    interval_options = ["1h", "4h"]
     interval = st.sidebar.selectbox(
         "Granularidad",
-        ["1h", "4h", "1d"],
-        index=["1h", "4h", "1d"].index(st.session_state.get("interval", "1h")),
+        interval_options,
+        index=interval_options.index(st.session_state.get("interval", "1h")) if st.session_state.get("interval", "1h") in interval_options else 0,
         key="interval",
         help="Frecuencia del precio. La predicción t+1 sigue esta granularidad."
     )
 
-    INTERVAL_TO_HOURS = {"1h": 1, "4h": 4, "1d": 24}
+    INTERVAL_TO_HOURS = {"1h": 1, "4h": 4}
     horizon_hours = INTERVAL_TO_HOURS.get(interval, 1)
     st.sidebar.caption(f"Predicción: **t+1** (siguiente {interval} → +{horizon_hours}h)")
 
-    # -------------- Carga de datasets (processed o raw) --------------
-    prefer_processed = PRICE_PROCESSED_PATH.exists() and NEWS_PROCESSED_PATH.exists()
-    price_path, news_path = _pick_data_paths(prefer_processed)
+    # -------------- Nueva selección de datasets según granularidad --------------
+    if interval == "1h":
+        price_path = PRICE_1H_RAW_PATH
+    else:
+        price_path = PRICE_4H_RAW_PATH
+    
+    news_path = NEWS_RAW_PATH
 
-    prices_df = _load_prices_cached(str(price_path))
+    # -------------- Carga de datasets (con caché) --------------
+    prices_df = _load_prices_compat(str(price_path))
     news_df   = _load_news_cached(str(news_path)) if news_path.exists() else pd.DataFrame()
 
     if prices_df.empty:
@@ -521,10 +568,19 @@ def render_app():
             """,
             unsafe_allow_html=True
         )
+    
+    st.sidebar.markdown("---")
+    run_pred = st.sidebar.button(
+        "🚀 Ejecutar Predicción",
+        help="Ejecuta la predicción live usando los modelos disponibles."
+    )
 
     st.sidebar.markdown("---")
-    if st.sidebar.button("Actualizar datos", type="secondary",
-        help="Refresca la información si se actualizaron CSVs en data/processed (limpia caché y recarga)."):
+    if st.sidebar.button(
+        "Actualizar datos",
+        type="secondary",
+        help="Refresca la información si se actualizaron CSVs en data/processed (limpia caché y recarga)."
+    ):
         st.cache_data.clear()
         st.rerun()
 
@@ -593,8 +649,13 @@ def render_app():
             target_ts_g = (last_seen_ts + pd.Timedelta(hours=horizon_hours)) if last_seen_ts is not None else None
 
             # Cargar predicciones
-            rf_df_sig = load_prediction_csv(str(RF_PRED_PATH), "y_pred_rf")
-            ar_df_sig = load_prediction_csv(str(ARIMA_PRED_PATH), "y_pred_arima")
+            if interval == "1h":
+                rf_path = PRED_RF_1H_PATH
+            else:
+                rf_path = PRED_RF_4H_PATH
+            
+            rf_df_sig = load_prediction_csv(str(rf_path), "y_pred_rf")
+            ar_df_sig = pd.DataFrame()  # aún no tienes ARIMA global
 
             pred_ar = None
             pred_rf = None
@@ -622,6 +683,18 @@ def render_app():
                     else:
                         if pd.notna(row["y_pred_rf"].iloc[0]):
                             pred_rf = float(row["y_pred_rf"].iloc[0])
+                
+                #Ejecutar predicción dinámica si el usuario presiona el botón
+                if run_pred:
+                    dynamic_result = _run_dynamic_predict_cached(
+                        target_ts_str=str(target_ts_g),
+                        resolution=interval,
+                        mode="auto",
+                        window_hours=24,
+                        model_name="xgb_clf"
+                    )
+                    if isinstance(dynamic_result, dict):
+                        pred_rf = dynamic_result.get("prediction", None)
 
             # Prioridad: ARIMA si existe; si no, RF; si no, neutral
             pred_used = pred_ar if pred_ar is not None else pred_rf
@@ -637,7 +710,7 @@ def render_app():
                 else:
                     final_label, color = "ESCENARIO NEUTRAL", "gray"
 
-            # Si ARIMA y RF discrepan, usa sentimiento como desempate (opcional)
+            # Si ARIMA y RF discrepan, usa sentimiento como desempate
             if pred_ar is not None and pred_rf is not None and last_price is not None:
                 dir_ar, _, _ = _direction_from_pred(last_price, pred_ar)
                 dir_rf, _, _ = _direction_from_pred(last_price, pred_rf)
@@ -671,7 +744,7 @@ def render_app():
             final_label, color = "ESCENARIO NEUTRAL", "gray"
 
             # Mostrar dirección aproximada con base en ARIMA del régimen en el panel
-            ar_reg = load_prediction_csv(str(ARIMA_PRED_REG_PATH), "y_pred_arima")
+            ar_reg = pd.DataFrame()  # aún sin ARIMA por régimen
 
             # Precio base: último observado del tramo mostrado
             last_series = price_window.dropna(subset=["price"]).sort_values("timestamp")
@@ -745,11 +818,23 @@ def render_app():
         st.subheader("Predicción")
         st.caption("Se integran salidas exportadas a CSV: Random Forest y/o ARIMA. En Regímenes solo se usa ARIMA del régimen.")
 
-        # Carga flexible
-        rf_df   = load_prediction_csv(str(RF_PRED_PATH), "y_pred_rf")
-        ar_df   = load_prediction_csv(str(ARIMA_PRED_PATH), "y_pred_arima")
-        rf_reg  = load_prediction_csv(str(RF_PRED_REG_PATH), "y_pred_rf")
-        ar_reg  = load_prediction_csv(str(ARIMA_PRED_REG_PATH), "y_pred_arima")
+        # Carga flexible según granularidad
+        if interval == "1h":
+            rf_path  = PRED_RF_1H_PATH
+            xgb_path = PRED_XGB_1H_PATH
+        else:
+            rf_path  = PRED_RF_4H_PATH
+            xgb_path = PRED_XGB_4H_PATH
+
+        rf_df  = load_prediction_csv(str(rf_path),  "y_pred")
+        xgb_df = load_prediction_csv(str(xgb_path), "y_pred")
+
+        # Renombrar para compatibilidad con UI
+        if not rf_df.empty:
+            rf_df = rf_df.rename(columns={"y_pred": "y_pred_rf"})
+        if not xgb_df.empty:
+            xgb_df = xgb_df.rename(columns={"y_pred": "y_pred_xgb"})
+
 
         if mode == "Regímenes (Halvings)":
             target_ts = st.session_state.get("__regime_target_ts__")
@@ -803,22 +888,36 @@ def render_app():
 
         else:
             # Modo Global — merge y t+1 desde último dato
-            if rf_df.empty and ar_df.empty:
+        
+            # Selección de paths según granularidad
+            if interval == "1h":
+                rf_path = PRED_RF_1H_PATH
+                xgb_path = PRED_XGB_1H_PATH
+            else:
+                rf_path = PRED_RF_4H_PATH
+                xgb_path = PRED_XGB_4H_PATH
+            
+            # Carga flexible
+            rf_df = load_prediction_csv(str(rf_path), "y_pred")
+            xgb_df = load_prediction_csv(str(xgb_path), "y_pred")
+            
+            # Renombrar columnas para mantener compatibilidad con UI
+            if not rf_df.empty:
+                rf_df = rf_df.rename(columns={"y_pred": "y_pred_rf"})
+            if not xgb_df.empty:
+                xgb_df = xgb_df.rename(columns={"y_pred": "y_pred_xgb"})
+                
+            if rf_df.empty and xgb_df.empty:
                 st.info("Aún no hay CSVs de predicción en data/processed/.")
             else:
                 # Merge outer
-                if not rf_df.empty and not ar_df.empty:
-                    pred_df = pd.merge(rf_df, ar_df, on="timestamp", how="outer")
-                    if "y_true_x" in pred_df.columns or "y_true_y" in pred_df.columns:
-                        pred_df["y_true"] = pred_df.get("y_true_x")
-                        if "y_true_y" in pred_df.columns:
-                            pred_df["y_true"] = pred_df["y_true"].fillna(pred_df["y_true_y"])
-                        pred_df = pred_df.drop(columns=[c for c in ["y_true_x", "y_true_y"] if c in pred_df.columns])
+                if not rf_df.empty and not xgb_df.empty:
+                    pred_df = pd.merge(rf_df, xgb_df, on="timestamp", how="outer")
                 else:
-                    pred_df = rf_df if not rf_df.empty else ar_df
-
+                    pred_df = rf_df if not rf_df.empty else xgb_df
+                
                 pred_df = pred_df.sort_values("timestamp")
-
+                
                 # Filtrar mismo rango de vista
                 pred_window = pred_df[(pred_df["timestamp"] >= start_ts) & (pred_df["timestamp"] <= end_ts)].copy()
                 if pred_window.empty:
@@ -830,51 +929,67 @@ def render_app():
                         st.info("No hay precio disponible para calcular el timestamp objetivo (t+1).")
                     else:
                         last_seen_ts = last_series["timestamp"].max()
-                        target_ts_g  = last_seen_ts + pd.Timedelta(hours=horizon_hours)
+                        target_ts_g = last_seen_ts + pd.Timedelta(hours=horizon_hours)
                         st.caption(f"Base (último dato): {last_seen_ts:%Y-%m-%d %H:%M} UTC → Objetivo: {target_ts_g:%Y-%m-%d %H:%M} UTC")
-
+                        
+                        # Ejecutar predicción dinámica solo si el usuario presiona el botón
+                        dynamic_pred = None
+                        if run_pred:
+                            dynamic_pred = _run_dynamic_predict_cached(
+                                target_ts_str=str(target_ts_g),
+                                resolution=interval,
+                                mode="auto",
+                                window_hours=24,
+                                model_name="xgb_clf"
+                            )
+                        
                         row_next = pred_df[pred_df["timestamp"] == target_ts_g]
                         if row_next.empty:
                             st.info(f"Aún no existe una fila de predicción exactamente para el siguiente {interval} (t+1).")
                         else:
                             last_price = float(last_series.iloc[-1]["price"])
-                            rf_val = row_next["y_pred_rf"].iloc[0]     if "y_pred_rf" in row_next.columns else None
-                            ar_val = row_next["y_pred_arima"].iloc[0] if "y_pred_arima" in row_next.columns else None
-
+                            rf_val = row_next["y_pred_rf"].iloc[0] if "y_pred_rf" in row_next.columns else None
+                            xgb_val = row_next["y_pred_xgb"].iloc[0] if "y_pred_xgb" in row_next.columns else None
+                            
                             c1, c2, c3 = st.columns(3)
                             c1.metric("Último precio observado (t)", f"{last_price:,.2f}")
-                            c2.metric("RF pred (t+1)",    f"{rf_val:,.2f}" if rf_val is not None and pd.notna(rf_val) else "N/A")
-                            c3.metric("ARIMA pred (t+1)", f"{ar_val:,.2f}" if ar_val is not None and pd.notna(ar_val) else "N/A")
+                            c2.metric("RF pred (t+1)", f"{rf_val:,.2f}" if rf_val is not None else "N/A")
+                            c3.metric("XGB pred (t+1)", f"{xgb_val:,.2f}" if xgb_val is not None else "N/A")
 
+                            if dynamic_pred is not None:
+                                st.markdown("### Predicción dinámica (live)")
+                                st.write(dynamic_pred)
+                            
                             directions = []
-                            if ar_val is not None and pd.notna(ar_val):
-                                directions.append("up" if ar_val > last_price else "down" if ar_val < last_price else "flat")
-                            if rf_val is not None and pd.notna(rf_val):
+                            if xgb_val is not None:
+                                directions.append("up" if xgb_val > last_price else "down" if xgb_val < last_price else "flat")
+                            if rf_val is not None:
                                 directions.append("up" if rf_val > last_price else "down" if rf_val < last_price else "flat")
-
+                            
                             if len(directions) >= 2 and directions[0] == directions[1] and directions[0] != "flat":
                                 st.success("✅ Ambos modelos coinciden en la dirección (mayor confianza).")
                             elif len(directions) >= 2 and directions[0] != directions[1]:
                                 st.warning("⚠️ Los modelos discrepan en dirección (señal mixta).")
                             else:
                                 st.info("ℹ️ Solo hay salida de un modelo disponible por ahora.")
-
+                    
                     # Plot & table
                     st.markdown("### 📈 Observed vs Predicted")
                     plot_df = pred_window.set_index("timestamp")
                     cols = []
-                    if "y_true" in plot_df.columns:       cols.append("y_true")
-                    if "y_pred_rf" in plot_df.columns:    cols.append("y_pred_rf")
-                    if "y_pred_arima" in plot_df.columns: cols.append("y_pred_arima")
+                    if "y_true" in plot_df.columns: cols.append("y_true")
+                    if "y_pred_rf" in plot_df.columns: cols.append("y_pred_rf")
+                    if "y_pred_xgb" in plot_df.columns: cols.append("y_pred_xgb")
                     if cols:
                         st.line_chart(plot_df[cols])
                     else:
                         st.info("No se encontraron columnas de predicción para graficar.")
-
+                    
                     st.markdown("### 📄 Predicciones (tabla)")
                     st.dataframe(pred_window.head(200), width='stretch')
                     csv_bytes = pred_window.to_csv(index=False).encode("utf-8")
                     st.download_button("Descargar predicciones (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv")
+        
 
     # --------- Tab Methodología (EDA) ---------
     with tab_method:
@@ -925,7 +1040,7 @@ def render_app():
     # --------- Tab Detalles ---------
     with tab_details:
         st.subheader("Resumen de datos")
-        fuente = "processed" if (price_path == PRICE_PROCESSED_PATH) else "raw(test)"
+        fuente = "raw" if "raw" in str(price_path).lower() else "processed"
         rows_news = int(len(news_window)) if mode == "Global" else 0
         sources = int(news_window["source"].nunique()) if (mode == "Global" and not news_window.empty and "source" in news_window.columns) else 0
 
