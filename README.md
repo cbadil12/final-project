@@ -1,112 +1,37 @@
-# Data Science Project Boilerplate
+# Sentiment Analysis Pipeline for BTC Price Prediction
 
-This boilerplate is designed to kickstart data science projects by providing a basic setup for database connections, data processing, and machine learning model development. It includes a structured folder organization for your datasets and a set of pre-defined Python packages necessary for most data science tasks.
+## Overview
+This branch implements the sentiment analysis component of a hybrid BTC price prediction system for 4Geeks Academy. The goal: predict up/down movements in 1H/4H resolutions using ~30% sentiment features + ~70% time-series (ARIMA/SARIMA). 
+Final integration: dynamic preds in Streamlit app (historical lookup or live fetch/compute/predict).
 
-## Structure
+Focus: NLP pipeline on Bitcoin news for sentiment scores, aggregated features (rolls/lags/shocks/div/ratio + Fear&Greed), merged with prices for training RF/XGB classifiers. Supports live mode with real-time news/F&G.
 
-The project is organized as follows:
+## Pipeline Stages
+1. **Fetch News (`fetch_news.py`)**: Downloads news from NewsAPI by axis (BTC, MACRO, TECH) using keywords. Supports date ranges or live (last 24H). Outputs: raw CSV with timestamps, titles, descriptions, sources.
 
-- **`src/app.py`** → Main Python script where your project will run.
-- **`src/explore.ipynb`** → Notebook for exploration and testing. Once exploration is complete, migrate the clean code to `app.py`.
-- **`src/utils.py`** → Auxiliary functions, such as database connection.
-- **`requirements.txt`** → List of required Python packages.
-- **`models/`** → Will contain your SQLAlchemy model classes.
-- **`data/`** → Stores datasets at different stages:
-  - **`data/raw/`** → Raw data.
-  - **`data/interim/`** → Temporarily transformed data.
-  - **`data/processed/`** → Data ready for analysis.
+2. **Compute Sentiment (`compute_sentiment.py`)**: Ensemble VADER + FinBERT on title+description. Batched processing, truncation for long texts. Outputs: interim CSV with vader_score, finbert_score, ensemble sentiment_score (-1 to 1).
 
+3. **Aggregate Features (`aggregate_features.py`)**: Aggregates to 1H/4H freq per axis. Stats: mean/std/count. Engineers: rolling mean/std (7 periods), shocks (±2 std), lags(1), momentum(diff), divergences (BTC-MACRO), ratios (BTC/MACRO count). Integrates Fear&Greed (CSV or API via download_latest_fng.py, ffill/default 50). Outputs: processed CSVs (aggregated_1h/4h.csv).
 
-## ⚡ Initial Setup in Codespaces (Recommended)
+4. **Integrate Features & Target (`integrate_features_target.py`)**: Merges aggregated features with BTC prices (btcusd-1h/4h.csv). Computes target_up (binary: future_return >0) and future_return (shift -1/-4). Drops close to avoid leakage. Outputs: dataset_sentiment_target_1h/4h.csv for training.
 
-No manual setup is required, as **Codespaces is automatically configured** with the predefined files created by the academy for you. Just follow these steps:
+5. **Train Models (`train_models.py`)**: Loads integrated dataset, splits (80/20 chronological), trains RF/XGB classifiers (params: n_est=200, etc.). Evaluates: acc, report, confusion. Exports: models/rf_clf_1h.joblib, etc.; predictions CSVs.
 
-1. **Wait for the environment to configure automatically**.
-   - All necessary packages and the database will install themselves.
-   - The automatically created `username` and `db_name` are in the **`.env`** file at the root of the project.
-2. **Once Codespaces is ready, you can start working immediately**.
+6. **Dynamic Prediction (`dynamic_predict.py`)**: Core for Streamlit. Parses input (ts, res, mode=auto, window=24, model=xgb/rf). Auto: hist if in dataset (nearest row), else live (fetch news → sentiment → aggregate + F&G → predict). Returns dict: prediction (up/down), confidence, proba_up, mode_used, msg/error.
 
+## Exploratory Data Analysis (EDAs)
+- **eda_sentiments.ipynb**: Justifies sentiment pipeline. Assesses data quality (temporal consistency, zero-handling), feature stats (episodic/non-stationary), weak corrs with returns but regime effects (high volume/divergence). Concludes: sentiment as contextual modulator.
+- **eda_time_series.ipynb**: (Colab with Carlos) Decomposes prices, tests stationarity (ADF), ACF/PACF for ARIMA/SARIMA params. Supports time-series baseline.
 
-## 💻 Local Setup (Only if you can't use Codespaces)
+## Models & Outputs
+- Classifiers: RF (max_depth=10), XGB (lr=0.03, depth=5). Binary: target_up.
+- Data: raw (news/prices/F&G), interim (sentiment/aggregated), processed (datasets/preds).
+- Models: .joblib in models/.
 
-**Prerequisites**
+## Integration & Usage
+- Streamlit (`streamlit_app.py`): User selects ts/res → dynamic_predict → displays preds/charts/news. Modes: hist/live.
+- Run: `python fetch_news.py` → `compute_sentiment.py` → etc. For live: dynamic_predict handles flow.
+- Deps: requirements.txt (pandas, sklearn, xgboost, transformers, vaderSentiment, newsapi, etc.).
 
-Make sure you have Python 3.11+ installed on your machine. You will also need pip to install the Python packages.
-
-**Installation**
-
-Clone the project repository to your local machine.
-
-Navigate to the project directory and install the required Python packages:
-
-```bash
-pip install -r requirements.txt
-```
-
-**Create a database (if necessary)**
-
-Create a new database within the Postgres engine by customizing and executing the following command:
-
-```bash
-$ psql -U postgres -c "DO \$\$ BEGIN 
-    CREATE USER my_user WITH PASSWORD 'my_password'; 
-    CREATE DATABASE my_database OWNER my_user; 
-END \$\$;"
-```
-Connect to the Postgres engine to use your database, manipulate tables, and data:
-
-```bash
-$ psql -U my_user -d my_database
-```
-
-Once inside PSQL, you can create tables, run queries, insert, update, or delete data, and much more!
-
-**Environment Variables**
-
-Create a .env file in the root directory of the project to store your environment variables, such as your database connection string:
-
-```makefile
-DATABASE_URL="postgresql://<USER>:<PASSWORD>@<HOST>:<PORT>/<DB_NAME>"
-
-#example
-DATABASE_URL="postgresql://my_user:my_password@localhost:5432/my_database"
-```
-
-## Running the Application
-
-To run the application, execute the app.py script from the root directory of the project:
-
-```bash
-python src/app.py
-```
-
-## Adding Models
-
-To add SQLAlchemy model classes, create new Python script files within the models/ directory. These classes should be defined according to your database schema.
-
-Example model definition (`models/example_model.py`):
-
-```py
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import String
-from sqlalchemy.orm import Mapped, mapped_column
-
-Base = declarative_base()
-
-class ExampleModel(Base):
-    __tablename__ = 'example_table'
-    id: Mapped[int] = mapped_column(primary_key=True)
-    username: Mapped[str] = mapped_column(unique=True)
-```
-
-## Working with Data
-
-You can place your raw datasets in the data/raw directory, intermediate datasets in data/interim, and processed datasets ready for analysis in data/processed.
-
-To process data, you can modify the app.py script to include your data processing steps, using pandas for data manipulation and analysis.
-
-## Contributors
-
-This template was built as part of the [Data Science and Machine Learning Bootcamp](https://4geeksacademy.com/us/coding-bootcamps/datascience-machine-learning) by 4Geeks Academy by [Alejandro Sanchez](https://twitter.com/alesanchezr) and many other contributors. Learn more about [4Geeks Academy BootCamp programs](https://4geeksacademy.com/us/programs) here.
-
-Other templates and resources like this can be found on the school's GitHub page.
+## Conclusions
+Implemented full NLP sentiment pipeline, feature engineering, training, and dynamic inference. Achieves contextual signals for BTC preds, ready for fusion (~30% weight) and app deployment. Weaknesses: weak sentiment corrs (expected, per EDA); strengths: live-capable, modular.
