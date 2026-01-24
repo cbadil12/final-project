@@ -21,7 +21,6 @@ Focus: NLP pipeline on Bitcoin news for sentiment scores, aggregated features (r
 
 ## Exploratory Data Analysis (EDAs)
 - **eda_sentiments.ipynb**: Justifies sentiment pipeline. Assesses data quality (temporal consistency, zero-handling), feature stats (episodic/non-stationary), weak corrs with returns but regime effects (high volume/divergence). Concludes: sentiment as contextual modulator.
-- **eda_time_series.ipynb**: (Colab with Carlos) Decomposes prices, tests stationarity (ADF), ACF/PACF for ARIMA/SARIMA params. Supports time-series baseline.
 
 ## Models & Outputs
 - Classifiers: RF (max_depth=10), XGB (lr=0.03, depth=5). Binary: target_up.
