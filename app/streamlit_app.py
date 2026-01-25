@@ -12,24 +12,25 @@ from streamlit_option_menu import option_menu
 import pandas as pd
 import math
 
-try:
-    from src.backend.dynamic_predict import run_dynamic_predict
-except Exception:
-    run_dynamic_predict = None
-
 # ------------------ Paths base ------------------
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
-    sys.path.append(ROOT)
+    sys.path.insert(0, ROOT)
 
 ROOT_PATH = Path(ROOT)
 ASSETS_DIR = ROOT_PATH / "assets"
 RAW_DIR = ROOT_PATH / "data" / "raw"
 PROCESSED_DIR = ROOT_PATH / "data" / "processed"
 
-BACKEND_DIR = os.path.join(ROOT, "src", "backend")
-if BACKEND_DIR not in sys.path:
-    sys.path.append(BACKEND_DIR)
+# --- Import dinámico ---
+DYN_IMPORT_ERROR = None
+run_dynamic_predict = None
+
+try:
+    from src.backend.dynamic_predict import run_dynamic_predict
+except Exception as e:
+    run_dynamic_predict = None
+    DYN_IMPORT_ERROR = repr(e)
 
 # Helpers de frontend
 from src.frontend.data_loader import (
@@ -418,6 +419,14 @@ def render_app():
 
     debug_mode = st.sidebar.toggle("Mostrar detalles técnicos (debug)", value=False)
 
+    if debug_mode and DYN_IMPORT_ERROR:
+        st.sidebar.error(f"Error import dynamic_predict: {DYN_IMPORT_ERROR}")
+        st.sidebar.write({
+            "run_dynamic_predict_is_none": run_dynamic_predict is None,
+            "DYN_IMPORT_ERROR": DYN_IMPORT_ERROR
+        })
+
+
     # Modo (Global vs Regímenes) — Global por defecto
     mode = st.sidebar.selectbox(
         "Modo de análisis",
@@ -544,7 +553,6 @@ def render_app():
             r_start, r_end = pd.Timestamp("2012-01-01", tz="UTC"), pd.Timestamp("2100-12-31", tz="UTC")
 
         st.sidebar.caption(f"Régimen detectado: **{regime}**")
-        st.sidebar.info("En modo Regímenes la predicción usa exclusivamente ARIMA del régimen (sentimiento no aplica).")
 
         # Para el gráfico de contexto, mostramos el tramo del régimen
         price_window = prices_df[(prices_df["timestamp"] >= r_start) & (prices_df["timestamp"] <= min(prices_df['timestamp'].max(), r_end))].copy()
@@ -574,6 +582,10 @@ def render_app():
         "🚀 Ejecutar Predicción",
         help="Ejecuta la predicción live usando los modelos disponibles."
     )
+    # --- Feedback inmediato del botón ---
+    if run_pred:
+        st.toast("Ejecutando predicción dinámica…", icon="🚀")
+
 
     st.sidebar.markdown("---")
     if st.sidebar.button(
@@ -654,80 +666,109 @@ def render_app():
             else:
                 rf_path = PRED_RF_4H_PATH
             
-            rf_df_sig = load_prediction_csv(str(rf_path), "y_pred_rf")
+            rf_df_sig = load_prediction_csv(str(rf_path), "y_pred")
             ar_df_sig = pd.DataFrame()  # aún no tienes ARIMA global
 
-            pred_ar = None
+            # --- Inicializar SIEMPRE para evitar UnboundLocalError en debug ---
+            dyn_pred_class = None
+            dyn_conf = None
+            pred_used = None
+
             pred_rf = None
+            pred_rf_proba = None
 
-            if target_ts_g is not None:
-                # ARIMA exacto
-                if not ar_df_sig.empty and "timestamp" in ar_df_sig.columns:
-                    row = ar_df_sig[ar_df_sig["timestamp"] == target_ts_g]
-                    if row.empty:
-                        # fallback: fila más cercana
-                        nearest = _nearest_row_by_ts(ar_df_sig, target_ts_g)
-                        if nearest is not None and pd.notna(nearest.get("y_pred_arima")):
-                            pred_ar = float(nearest["y_pred_arima"])
-                    else:
-                        if pd.notna(row["y_pred_arima"].iloc[0]):
-                            pred_ar = float(row["y_pred_arima"].iloc[0])
+            # --- Buscar predicción precomputada (CSV) ---
+            
+            if target_ts_g is not None and not rf_df_sig.empty and "timestamp" in rf_df_sig.columns:
+                row = rf_df_sig[rf_df_sig["timestamp"] == target_ts_g]
+                if row.empty:
+                    nearest = _nearest_row_by_ts(rf_df_sig, target_ts_g)
+                    if nearest is not None:
+                        pred_rf = nearest.get("y_pred", None)
+                        pred_rf_proba = nearest.get("proba_up", None)
+                else:
+                    pred_rf = row["y_pred"].iloc[0] if "y_pred" in row.columns else None
+                    pred_rf_proba = row["proba_up"].iloc[0] if "proba_up" in row.columns else None
 
-                # RF exacto
-                if not rf_df_sig.empty and "timestamp" in rf_df_sig.columns:
-                    row = rf_df_sig[rf_df_sig["timestamp"] == target_ts_g]
-                    if row.empty:
-                        nearest = _nearest_row_by_ts(rf_df_sig, target_ts_g)
-                        if nearest is not None and pd.notna(nearest.get("y_pred_rf")):
-                            pred_rf = float(nearest["y_pred_rf"])
-                    else:
-                        if pd.notna(row["y_pred_rf"].iloc[0]):
-                            pred_rf = float(row["y_pred_rf"].iloc[0])
-                
-                #Ejecutar predicción dinámica si el usuario presiona el botón
-                if run_pred:
+            # --- Predicción dinámica (Adri) si el usuario presiona el botón ---
+            dyn_pred_class = None
+            dyn_conf = None
+            if run_pred and target_ts_g is not None:
+                with st.spinner("Ejecutando predicción dinámica (Global)…"):
                     dynamic_result = _run_dynamic_predict_cached(
                         target_ts_str=str(target_ts_g),
                         resolution=interval,
-                        mode="auto",
+                        mode="historical", #cambiar a "auto" cuando tenga NEWS API
                         window_hours=24,
                         model_name="xgb_clf"
                     )
-                    if isinstance(dynamic_result, dict):
-                        pred_rf = dynamic_result.get("prediction", None)
+                # Guardar resultado (para mostrarlo también en la pestaña Predicción)
+                st.session_state["__dyn_global_result__"] = dynamic_result
 
-            # Prioridad: ARIMA si existe; si no, RF; si no, neutral
-            pred_used = pred_ar if pred_ar is not None else pred_rf
+                # Mostrar el mensaje si existe
+                if isinstance(dynamic_result, dict) and dynamic_result.get("msg"):
+                    st.info(f"DynamicPredict: {dynamic_result['msg']}")
+                            
+                if isinstance(dynamic_result, dict):
+                    dyn_pred_class = dynamic_result.get("prediction", None)  # 0/1
+                    dyn_conf = dynamic_result.get("confidence", None)        # 0..1
 
-            final_label, color, delta = _direction_from_pred(last_price, pred_used)
-            
-            # Si NO hay predicción técnica disponible, usar sentimiento como fallback
-            if pred_used is None:
+            # --- Señal final (prioridad: dinámico > CSV > sentimiento) ---
+            final_label, color, delta = "ESCENARIO NEUTRAL", "gray", None
+            signal_source = "sentiment"
+
+            if dyn_pred_class is not None:
+                signal_source = "dynamic"
+                if dyn_pred_class == 1:
+                    final_label, color = "SUBIDA", "green"
+                elif dyn_pred_class == 0:
+                    final_label, color = "BAJADA", "red"
+
+                if dyn_conf is not None:
+                    try:
+                        prob = int(max(0, min(100, float(dyn_conf) * 100)))
+                    except Exception:
+                        pass
+
+            elif (not run_pred) and pred_rf is not None:
+                signal_source = "csv"
+                try:
+                    cls = int(pred_rf)
+                except Exception:
+                    cls = None
+
+                if cls == 1:
+                    final_label, color = "SUBIDA", "green"
+                elif cls == 0:
+                    final_label, color = "BAJADA", "red"
+
+                # confianza desde proba_up
+                if pred_rf_proba is not None:
+                    try:
+                        p = float(pred_rf_proba)
+                        prob = int(max(0, min(100, max(p, 1 - p) * 100)))
+                    except Exception:
+                        pass
+
+            else:
+                # fallback a sentimiento (ya calculado arriba)
+                signal_source = "sentiment"
                 if sentiment_score > 0.05:
                     final_label, color = "SUBIDA", "green"
                 elif sentiment_score < -0.05:
                     final_label, color = "BAJADA", "red"
                 else:
                     final_label, color = "ESCENARIO NEUTRAL", "gray"
-
-            # Si ARIMA y RF discrepan, usa sentimiento como desempate
-            if pred_ar is not None and pred_rf is not None and last_price is not None:
-                dir_ar, _, _ = _direction_from_pred(last_price, pred_ar)
-                dir_rf, _, _ = _direction_from_pred(last_price, pred_rf)
-                if dir_ar != dir_rf:
-                    if sentiment_score > 0.05:
-                        final_label, color = "SUBIDA", "green"
-                    elif sentiment_score < -0.05:
-                        final_label, color = "BAJADA", "red"
-                    else:
-                        final_label, color = "ESCENARIO NEUTRAL", "gray"
-
+            
+    
             st.subheader("Señal final")
             st.markdown(f"<h3 style='color:{color}; margin:0'>{final_label}</h3>", unsafe_allow_html=True)
             st.progress(prob)
 
             if debug_mode:
                 with st.expander("Detalles técnicos (debug)", expanded=False):
+                    st.write({"dyn_pred_class": dyn_pred_class, "dyn_conf": dyn_conf, "pred_used": pred_used})
+                    st.write({"signal_source": signal_source, "pred_rf": pred_rf, "pred_rf_proba": pred_rf_proba})
                     if target_ts_g is not None:
                         st.write(f"t: {last_seen_ts:%Y-%m-%d %H:%M} UTC → t+1: {target_ts_g:%Y-%m-%d %H:%M} UTC")
                     if last_price is not None and pred_used is not None and delta is not None:
@@ -736,45 +777,44 @@ def render_app():
                         st.write("No hay predicción disponible para t+1 (faltan CSVs o fila exacta).")
 
         else:
-            # Regímenes: sentimiento no aplica a pred futura — mostrar ARIMA
+            # Regímenes: usar predicción dinámica al pulsar botón; fallback a tendencia si no hay resultado
             target_ts = st.session_state.get("__regime_target_ts__")
             regime    = st.session_state.get("__regime_name__")
-            st.info("En modo Regímenes la señal no usa noticias; se basa en ARIMA del régimen.")
+            st.info("En modo Regímenes, la predicción dinámica decide si usa histórico o live según disponibilidad de datos.")
 
             final_label, color = "ESCENARIO NEUTRAL", "gray"
+            conf = None
 
-            # Mostrar dirección aproximada con base en ARIMA del régimen en el panel
-            ar_reg = pd.DataFrame()  # aún sin ARIMA por régimen
-
-            # Precio base: último observado del tramo mostrado
+            # # Precio base: último observado del tramo mostrado (para fallback)
             last_series = price_window.dropna(subset=["price"]).sort_values("timestamp")
             base_ref = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
 
-            y_ar = None
+            # --- Ejecutar predicción dinámica SOLO si el usuario presiona el botón ---
+            dyn_result = st.session_state.get("__dyn_reg_result__")
 
+            if run_pred and target_ts is not None:
+                with st.spinner("Ejecutando Prerdicción dinámica - Regímenes..."):
+                    dyn_result = _run_dynamic_predict_cached(
+                        target_ts_str=str(target_ts),
+                        resolution=interval,
+                        mode="historical", #cambiar a "auto" cuando tenga NEWS API
+                        window_hours=24,
+                        model_name="xgb_clf"
+                    )
+                st.session_state["__dyn_reg_result__"] = dyn_result
+            
+            # -- Interpretación del resultado dinámico (prediction = clase 0/1) ---
+            pred_class =  None
+            if isinstance(dyn_result, dict):
+                pred_class = dyn_result.get("prediction", None)
+                conf = dyn_result.get("confidence",None)
 
-            # 1) Si hay predicciones por régimen, intentar exacta o nearest
-            if target_ts is not None and not ar_reg.empty and "regime" in ar_reg.columns and "timestamp" in ar_reg.columns:
-                preds_reg = ar_reg[ar_reg["regime"] == regime].copy()
-
-                row = preds_reg[preds_reg["timestamp"] == target_ts]
-                if not row.empty and pd.notna(row["y_pred_arima"].iloc[0]):
-                    y_ar = float(row["y_pred_arima"].iloc[0])
-                else:
-                    nearest = _nearest_row_by_ts(preds_reg, target_ts)
-                    if nearest is not None and pd.notna(nearest.get("y_pred_arima")):
-                        y_ar = float(nearest["y_pred_arima"])
-
-            # 2) Dirección desde ARIMA si existe
-            if base_ref is not None and y_ar is not None:
-                if y_ar > base_ref:
-                    final_label, color = "SUBIDA", "green"
-                elif y_ar < base_ref:
-                    final_label, color = "BAJADA", "red"
-                else:
-                    final_label, color = "ESCENARIO NEUTRAL", "gray"
+            if pred_class ==1:
+                final_label, color = "SUBIDA", "green"
+            elif pred_class == 0:
+                final_label, color = "BAJADA", "red"
             else:
-                # 3) Fallback final (si no hay predicciones): tendencia reciente
+                # 3) Fallback final tendencia reciente - si no hay resultado dinámico
                 if len(last_series) >= 2 and base_ref is not None:
                     prev_ref = float(last_series.iloc[-2]["price"])
                     if base_ref > prev_ref:
@@ -785,13 +825,20 @@ def render_app():
             # ✅ SIEMPRE mostrar Señal final en Regímenes
             st.subheader("Señal final")
             st.markdown(f"<h3 style='color:{color}; margin:0'>{final_label}</h3>", unsafe_allow_html=True)
-            st.progress(100 if color != "gray" else 50)
+            
+            # Progreso: usar confianza si existe, si no neutral 50%
+            try:
+                prog = int(max(0, min(100, float(conf) * 100))) if conf is not None else 50
+            except Exception:
+                prog = 50
+            st.progress(prog)
 
-            # Debug opcional (solo si activas el toggle)
+            # Debug opcional (solo si toggle es activado)
             if debug_mode:
                 with st.expander("Detalles técnicos (debug)", expanded=False):
                     st.write({"regime": regime, "target_ts": str(target_ts)})
-                    st.write({"base_ref": base_ref, "y_pred_arima": y_ar})
+                    st.write({"base_ref": base_ref})
+                    st.write({"dyn_result": dyn_result})
 
     st.divider()
 
@@ -811,12 +858,12 @@ def render_app():
             else:
                 st.info("No hay noticias para mostrar en el rango.")
         else:
-            st.info("En modo Regímenes, las noticias no aplican a la predicción futura.")
+            st.info("En modo Regímenes, el contexto de noticias no se muestra aquí (se usa predicción dinámica bajo demanda).")
 
     # --------- Tab Señal & Predicción ---------
     with tab_signal:
         st.subheader("Predicción")
-        st.caption("Se integran salidas exportadas a CSV: Random Forest y/o ARIMA. En Regímenes solo se usa ARIMA del régimen.")
+        st.caption("Sentimiento: RF/XGB (clasificación). Time Series (ARIMA/SARIMA)")
 
         # Carga flexible según granularidad
         if interval == "1h":
@@ -840,141 +887,109 @@ def render_app():
             target_ts = st.session_state.get("__regime_target_ts__")
             regime    = st.session_state.get("__regime_name__")
 
-            if ar_reg.empty or "regime" not in ar_reg.columns:
-                st.info("No se encontraron predicciones ARIMA por régimen.")
+            st.caption("Régimen: {regime}. Predicción dinámica disponible al pulsar 🚀 Ejecutar Predicción.")
+
+            # 1) Mostrar resultado dinámico si existe (guardado por el panel Regímenes)
+            dyn_result = st.session_state.get("__dyn_reg_result__")
+            if isinstance(dyn_result, dict) and dyn_result.get("prediction") is not None:
+                st.markdown("### 🔥 Predicción dinámica")
+                st.write({
+                    "prediction": dyn_result.get("prediction"),     # 0/1
+                    "confidence": dyn_result.get("confidence"),
+                    "proba_up": dyn_result.get("proba_up"),
+                    "mode_used": dyn_result.get("mode_used"),
+                    "model": dyn_result.get("model"),
+                    "timestamp": dyn_result.get("timestamp"),
+                    "resolution": dyn_result.get("resolution"),
+                    "msg": dyn_result.get("msg"),
+                })
             else:
-                preds = ar_reg[ar_reg["regime"] == regime].copy()
-                if preds.empty:
-                    st.warning(f"No hay predicciones ARIMA para el régimen {regime}.")
-                else:
-                    row_next = preds[preds["timestamp"] == target_ts]
-                    if row_next.empty:
-                        st.warning(f"No existe una fila de predicción exactamente para {target_ts:%Y-%m-%d %H:%M} UTC en el régimen {regime}.")
+                st.info("Aún no hay predicción dinámica guardada. Pulsa el botón 🚀 en el sidebar para generarla.")
+
+            # 2) Mostrar predicciones históricas precomputadas alrededor del target
+            if target_ts is None:
+                st.info("Selecciona una fecha objetivo para ver predicciones cercanas.")
+            else:
+                lo, hi = target_ts - pd.Timedelta(days=7), target_ts + pd.Timedelta(days=7)
+
+                rf_win  = rf_df[(rf_df["timestamp"] >= lo) & (rf_df["timestamp"] <= hi)].copy() if not rf_df.empty else pd.DataFrame()
+                xgb_win = xgb_df[(xgb_df["timestamp"] >= lo) & (xgb_df["timestamp"] <= hi)].copy() if not xgb_df.empty else pd.DataFrame()
+
+                st.markdown("### 📄 Predicciones históricas (CSV) — ventana ±7 días")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write("RF (clasificación)")
+                    if not rf_win.empty:
+                        st.dataframe(rf_win.head(80), width="stretch")
                     else:
-                        # Mostrar métricas y dirección usando SOLO ARIMA
-                        last_series = price_window.dropna(subset=["price"])
-                        last_price = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
-
-                        y_true  = float(row_next["y_true"].iloc[0]) if "y_true" in row_next.columns and pd.notna(row_next["y_true"].iloc[0]) else None
-                        y_ar    = float(row_next["y_pred_arima"].iloc[0]) if pd.notna(row_next["y_pred_arima"].iloc[0]) else None
-
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Régimen", regime)
-                        if last_price is not None:
-                            c2.metric("Último precio observado (t)", f"{last_price:,.2f}")
-                        c3.metric("ARIMA (t objetivo)", f"{y_ar:,.2f}" if y_ar is not None else "N/A")
-
-                        direction = None
-                        base_ref  = last_price if last_price is not None else y_true
-                        if y_ar is not None and base_ref is not None:
-                            if y_ar > base_ref: direction = "SUBIDA"
-                            elif y_ar < base_ref: direction = "BAJADA"
-                            else: direction = "NEUTRAL"
-
-                        if direction:
-                            st.success(f"Dirección ARIMA (régimen {regime}): **{direction}**")
-                        else:
-                            st.info("No fue posible determinar la dirección (faltan valores).")
-
-                        # Plot de vecindario temporal
-                        window = preds.set_index("timestamp").sort_index()
-                        lo, hi = target_ts - pd.Timedelta(days=7), target_ts + pd.Timedelta(days=7)
-                        win = window[(window.index >= lo) & (window.index <= hi)]
-                        if not win.empty:
-                            cols = []
-                            if "y_true" in win.columns: cols.append("y_true")
-                            if "y_pred_arima" in win.columns: cols.append("y_pred_arima")
-                            st.line_chart(win[cols])
+                        st.info("No hay datos RF en la ventana seleccionada.")
+                with c2:
+                    st.write("XGB (clasificación)")
+                    if not xgb_win.empty:
+                        st.dataframe(xgb_win.head(80), width="stretch")
+                    else:
+                        st.info("No hay datos XGB en la ventana seleccionada.")
 
         else:
-            # Modo Global — merge y t+1 desde último dato
-        
-            # Selección de paths según granularidad
-            if interval == "1h":
-                rf_path = PRED_RF_1H_PATH
-                xgb_path = PRED_XGB_1H_PATH
-            else:
-                rf_path = PRED_RF_4H_PATH
-                xgb_path = PRED_XGB_4H_PATH
-            
-            # Carga flexible
-            rf_df = load_prediction_csv(str(rf_path), "y_pred")
-            xgb_df = load_prediction_csv(str(xgb_path), "y_pred")
-            
-            # Renombrar columnas para mantener compatibilidad con UI
-            if not rf_df.empty:
-                rf_df = rf_df.rename(columns={"y_pred": "y_pred_rf"})
-            if not xgb_df.empty:
-                xgb_df = xgb_df.rename(columns={"y_pred": "y_pred_xgb"})
-                
+            # ---------- Global ----------
             if rf_df.empty and xgb_df.empty:
-                st.info("Aún no hay CSVs de predicción en data/processed/.")
+                st.info("Aún no hay CSVs de predicción de sentimiento en data/processed/.")
             else:
-                # Merge outer
+                # Merge
                 if not rf_df.empty and not xgb_df.empty:
                     pred_df = pd.merge(rf_df, xgb_df, on="timestamp", how="outer")
                 else:
                     pred_df = rf_df if not rf_df.empty else xgb_df
-                
+
                 pred_df = pred_df.sort_values("timestamp")
-                
-                # Filtrar mismo rango de vista
                 pred_window = pred_df[(pred_df["timestamp"] >= start_ts) & (pred_df["timestamp"] <= end_ts)].copy()
+
                 if pred_window.empty:
                     st.warning("Hay predicciones, pero no hay registros dentro del rango de fechas seleccionado.")
                 else:
                     st.markdown(f"### ⏭️ Predicción — siguiente {interval} (+{horizon_hours}h)")
+
                     last_series = price_window.dropna(subset=["price"])
                     if last_series.empty:
                         st.info("No hay precio disponible para calcular el timestamp objetivo (t+1).")
                     else:
                         last_seen_ts = last_series["timestamp"].max()
-                        target_ts_g = last_seen_ts + pd.Timedelta(hours=horizon_hours)
+                        target_ts_g  = last_seen_ts + pd.Timedelta(hours=horizon_hours)
                         st.caption(f"Base (último dato): {last_seen_ts:%Y-%m-%d %H:%M} UTC → Objetivo: {target_ts_g:%Y-%m-%d %H:%M} UTC")
-                        
-                        # Ejecutar predicción dinámica solo si el usuario presiona el botón
-                        dynamic_pred = None
-                        if run_pred:
-                            dynamic_pred = _run_dynamic_predict_cached(
-                                target_ts_str=str(target_ts_g),
-                                resolution=interval,
-                                mode="auto",
-                                window_hours=24,
-                                model_name="xgb_clf"
-                            )
-                        
+
                         row_next = pred_df[pred_df["timestamp"] == target_ts_g]
                         if row_next.empty:
                             st.info(f"Aún no existe una fila de predicción exactamente para el siguiente {interval} (t+1).")
                         else:
-                            last_price = float(last_series.iloc[-1]["price"])
-                            rf_val = row_next["y_pred_rf"].iloc[0] if "y_pred_rf" in row_next.columns else None
+                            rf_val  = row_next["y_pred_rf"].iloc[0] if "y_pred_rf" in row_next.columns else None
                             xgb_val = row_next["y_pred_xgb"].iloc[0] if "y_pred_xgb" in row_next.columns else None
-                            
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("Último precio observado (t)", f"{last_price:,.2f}")
-                            c2.metric("RF pred (t+1)", f"{rf_val:,.2f}" if rf_val is not None else "N/A")
-                            c3.metric("XGB pred (t+1)", f"{xgb_val:,.2f}" if xgb_val is not None else "N/A")
 
-                            if dynamic_pred is not None:
-                                st.markdown("### Predicción dinámica (live)")
-                                st.write(dynamic_pred)
-                            
+                            # Mostrar como clase (SUBIDA/BAJADA), no como número flotante
+                            def _cls_label(v):
+                                if v is None or pd.isna(v): return "N/A"
+                                return "SUBIDA" if int(v) == 1 else "BAJADA"
+
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("t+1 timestamp", f"{target_ts_g:%Y-%m-%d %H:%M} UTC")
+                            c2.metric("RF pred (t+1)", _cls_label(rf_val))
+                            c3.metric("XGB pred (t+1)", _cls_label(xgb_val))
+
+                            # Consenso (ambos son 0/1)
                             directions = []
-                            if xgb_val is not None:
-                                directions.append("up" if xgb_val > last_price else "down" if xgb_val < last_price else "flat")
-                            if rf_val is not None:
-                                directions.append("up" if rf_val > last_price else "down" if rf_val < last_price else "flat")
-                            
-                            if len(directions) >= 2 and directions[0] == directions[1] and directions[0] != "flat":
+                            if rf_val is not None and pd.notna(rf_val):
+                                directions.append(int(rf_val))
+                            if xgb_val is not None and pd.notna(xgb_val):
+                                directions.append(int(xgb_val))
+
+                            if len(directions) == 2 and directions[0] == directions[1]:
                                 st.success("✅ Ambos modelos coinciden en la dirección (mayor confianza).")
-                            elif len(directions) >= 2 and directions[0] != directions[1]:
+                            elif len(directions) == 2 and directions[0] != directions[1]:
                                 st.warning("⚠️ Los modelos discrepan en dirección (señal mixta).")
                             else:
                                 st.info("ℹ️ Solo hay salida de un modelo disponible por ahora.")
-                    
-                    # Plot & table
-                    st.markdown("### 📈 Observed vs Predicted")
+
+                    # Plot & table (clasificación + y_true si existe)
+                    st.markdown("### 📈 Observed vs Predicted (clasificación)")
                     plot_df = pred_window.set_index("timestamp")
                     cols = []
                     if "y_true" in plot_df.columns: cols.append("y_true")
@@ -984,12 +999,12 @@ def render_app():
                         st.line_chart(plot_df[cols])
                     else:
                         st.info("No se encontraron columnas de predicción para graficar.")
-                    
+
                     st.markdown("### 📄 Predicciones (tabla)")
                     st.dataframe(pred_window.head(200), width='stretch')
                     csv_bytes = pred_window.to_csv(index=False).encode("utf-8")
                     st.download_button("Descargar predicciones (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv")
-        
+
 
     # --------- Tab Methodología (EDA) ---------
     with tab_method:
