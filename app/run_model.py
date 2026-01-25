@@ -12,12 +12,14 @@ import pandas as pd
 import numpy as np
 import joblib
 
+from functools import lru_cache
+
 # ===============================
 # CONFIGURATION
 # ===============================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-MODEL_DIR = '../models/'  # Relative to app/ (adjust if needed)
+MODEL_DIR = 'models'  # Relative to app/ (adjust if needed)
 MODEL_EXT = '.joblib'
 THRESHOLD = 0.5  # For binary prediction (up if proba_up > threshold)
 DEFAULT_MODEL = 'xgb_clf'  # Default if not specified
@@ -30,6 +32,7 @@ SUPPORTED_RESOLUTIONS = ['1h', '4h']  # Align with app intervals
 # ===============================
 # MODEL LOADING
 # ===============================
+@lru_cache(maxsize=8)
 def load_model(resolution: str = DEFAULT_RESOLUTION, model_name: str = DEFAULT_MODEL):
     """
     Loads the pre-trained model from disk.
@@ -89,11 +92,25 @@ def run_prediction(
     
     # Ensure index is datetime
     if not isinstance(features_df.index, pd.DatetimeIndex):
-        features_df.index = pd.to_datetime(features_df.index, utc=True)
+        features_df.index = pd.to_datetime(features_df.index, utc=True, errors="coerce")
     
-    # Select nearest row to target_ts
-    idx = (features_df.index - target_ts).abs().idxmin()
-    row = features_df.loc[[idx]]  # As DF for consistency
+    # Drop NaT just in case and sort (required for nearest)
+    features_df = features_df[features_df.index.notna()]
+    if features_df.empty:
+        logging.warning("Empty features DF after datetime conversion - returning neutral fallback")
+        return {'prediction': 0, 'proba_up': 0.5, 'confidence': 0.5}
+
+    if not features_df.index.is_monotonic_increasing:
+        features_df = features_df.sort_index()
+
+    # Select nearest row to target_ts WITHOUT .abs()
+    pos = features_df.index.get_indexer([target_ts], method="nearest")[0]
+    if pos == -1:
+        logging.warning("Could not find nearest timestamp - returning neutral fallback")
+        return {'prediction': 0, 'proba_up': 0.5, 'confidence': 0.5}
+
+    row = features_df.iloc[[pos]]
+
     
     # Drop non-feature cols if specified
     if drop_cols:
