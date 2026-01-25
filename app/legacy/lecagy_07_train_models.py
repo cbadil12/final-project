@@ -8,6 +8,7 @@ import numpy as np
 from xgboost import XGBClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import json
 
 # ===============================
 # CONFIG
@@ -89,6 +90,18 @@ def train_and_evaluate(X_train, X_test, y_train, y_test, test_timestamps, resolu
         model = RandomForestClassifier(**RF_PARAMS)
     else:
         raise ValueError("Modelo no soportado")
+    
+        os.makedirs(MODELS_DIR, exist_ok=True)
+
+    feature_cols_path = os.path.join(
+        MODELS_DIR,
+        f"feature_columns_{resolution}.json"
+    )
+
+    with open(feature_cols_path, "w") as f:
+        json.dump(list(X_train.columns), f)
+
+    logging.info(f"Feature columns guardadas en: {feature_cols_path}")
 
     model.fit(X_train, y_train)
     preds = model.predict(X_test)
@@ -104,7 +117,7 @@ def train_and_evaluate(X_train, X_test, y_train, y_test, test_timestamps, resolu
     joblib.dump(model, model_path)
     logging.info(f"Modelo: {model_path}")
 
-    # Export preds (compatible con Mercedes)
+    # Export preds 
     preds_df = pd.DataFrame({
         "timestamp": test_timestamps,
         "y_true": y_test,
@@ -120,7 +133,7 @@ def train_and_evaluate(X_train, X_test, y_train, y_test, test_timestamps, resolu
 # ===============================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--resolution", choices=["1h", "4h"], default="1h")
+    parser.add_argument("--resolution", choices=["1h", "4h"], default="4h")
     parser.add_argument("--model", choices=["xgb", "rf"], default="xgb")
     args = parser.parse_args()
 
