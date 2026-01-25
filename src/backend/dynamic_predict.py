@@ -7,24 +7,26 @@
 import os
 import logging
 from datetime import datetime
+from pathlib import Path
+
 
 # Third-party libraries
 import pandas as pd
 
 # Local application imports (from app/)
-from download_last_fng import download_latest_fng
-from fetch_news import fetch_news_by_axis
-from compute_sentiment import run_sentiment_analysis
-from aggregate_features import aggregate_features
-from run_model import load_model, run_prediction
+from app.download_last_fng import download_latest_fng
+from app.compute_sentiment import run_sentiment_analysis
+from app.aggregate_features import aggregate_features
+from app.run_model import load_model, run_prediction
 
 # ===============================
 # CONFIGURATION
 # ===============================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-DATA_PROCESSED_DIR = '../data/processed/'  # Relative to app/
-FNG_PATH = '../data/raw/fear_greed.csv'
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # .../src/backend/dynamic_predict.py -> /src -> / (root)
+DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+FNG_PATH = PROJECT_ROOT / "data" / "raw" / "fear_greed.csv"
 WINDOW_HOURS_DEFAULT = 24
 DEFAULT_MODEL = 'xgb_clf'
 
@@ -34,33 +36,65 @@ DEFAULT_MODEL = 'xgb_clf'
 def load_dataset(resolution: str) -> pd.DataFrame:
     """
     Loads the historical preprocessed dataset for the resolution.
+    Accepts either 'timestamp' or 'datetime' as time column.
+    Returns a DF indexed by timestamp (UTC), sorted.
     """
+
+    # Ruta robusta (independiente del cwd)
+    project_root = Path(__file__).resolve().parents[2]
+    data_processed_dir = project_root / "data" / "processed"
+
     filename = f'dataset_sentiment_target_{resolution}.csv'
-    path = os.path.join(DATA_PROCESSED_DIR, filename)
-    if not os.path.exists(path):
+    path = data_processed_dir / filename
+
+    if not path.exists():
         logging.warning(f"Historical dataset not found: {path} - fallback to live mode")
         return pd.DataFrame()
     
-    df = pd.read_csv(path, parse_dates=['timestamp'], index_col='timestamp')
-    logging.info(f"Loaded historical dataset: {len(df)} rows")
+    df = pd.read_csv(path)
+    df.columns = [c.strip() for c in df.columns]
+
+    # Detectar columna de tiempo
+    if "timestamp" in df.columns:
+        time_col = "timestamp"
+    elif "datetime" in df.columns:
+        time_col = "datetime"
+    else:
+        logging.error(f"Dataset has no 'timestamp' or 'datetime' column: {path}")
+        return pd.DataFrame()
+
+    # Normalizar a timestamp UTC y poner índice
+    df[time_col] = pd.to_datetime(df[time_col], utc=True, errors="coerce")
+    df = df.dropna(subset=[time_col]).set_index(time_col).sort_index()
+
+    logging.info(f"Loaded historical dataset: {len(df)} rows (time_col={time_col})")
     return df
+
 
 def get_features_from_dataset(df: pd.DataFrame, target_ts: pd.Timestamp) -> pd.DataFrame:
     """
     Gets features row from historical dataset (nearest to target_ts).
     Drops target columns to avoid leakage.
     """
-    if df.empty:
+    if df is None or df.empty:
         return pd.DataFrame()
     
-    idx = (df.index - target_ts).abs().idxmin()
-    row = df.loc[[idx]].copy()
-    
+    # Asegura índice ordenado (requisito para nearest)
+    if not df.index.is_monotonic_increasing:
+        df = df.sort_index()
+
+    # Encontrar el índice más cercano sin usar .abs()
+    pos = df.index.get_indexer([target_ts], method="nearest")[0]
+    if pos == -1:
+        return pd.DataFrame()
+
+    row = df.iloc[[pos]].copy()
+
     # Drop target/leakage cols
-    drop_cols = ['target_up', 'future_return']  # Adjust based on your dataset
+    drop_cols = ['target_up', 'future_return']
     row = row.drop(columns=[c for c in drop_cols if c in row.columns], errors='ignore')
-    
-    logging.info(f"Historical features selected for {target_ts}")
+
+    logging.info(f"Historical features selected for {target_ts} -> {row.index[0]}")
     return row
 
 def get_features_live(
@@ -70,12 +104,32 @@ def get_features_live(
 ) -> pd.DataFrame:
     """
     Builds features in live mode: fetch F&G, news, sentiment, aggregate.
+    Live requiere dependencias (newsapi) y NEWS_API_KEY; si no existen, devuelve DF vacío.
     """
+    # --- Lazy imports - si no esta la NEWS API disponible ---
+    try:
+        # si tus módulos están en app/
+        from app.fetch_news import fetch_news_by_axis
+    except Exception:
+        # fallback por si tu proyecto resuelve módulos sin prefijo app.
+        try:
+            from fetch_news import fetch_news_by_axis
+        except ModuleNotFoundError as e:
+            logging.warning(f"Live mode temporarily unavailable (missing dependency): {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            logging.warning(f"Live mode temporarily unavailable (fetch_news import error): {e}")
+            return pd.DataFrame()
+
     # Step 1: Update F&G
     download_latest_fng(output_path=FNG_PATH)  # Updates CSV
     
     # Step 2: Fetch news
-    df_news = fetch_news_by_axis(use_now=True, window_hours=window_hours)
+    try:
+        df_news = fetch_news_by_axis(use_now=True, window_hours=window_hours)
+    except Exception as e:
+        logging.warning(f"Live mode temporarily unavailable (fetch_news_by_axis failed): {e}")
+        return pd.DataFrame()
     
     # Step 3: Compute sentiment
     df_sentiment = run_sentiment_analysis(df_news)
@@ -88,8 +142,15 @@ def get_features_live(
     if df_agg.empty:
         return pd.DataFrame()
     
-    idx = (df_agg.index - target_ts).abs().idxmin()
-    row = df_agg.loc[[idx]]
+    # Select nearest row (sin .abs)
+    if not df_agg.index.is_monotonic_increasing:
+        df_agg = df_agg.sort_index()
+
+    pos = df_agg.index.get_indexer([target_ts], method="nearest")[0]
+    if pos == -1:
+        return pd.DataFrame()
+
+    row = df_agg.iloc[[pos]]
     
     logging.info(f"Live features built for {target_ts}")
     return row
