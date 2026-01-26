@@ -27,40 +27,24 @@ from src.config.news_keywords import KEYWORD_MAP
 # ===============================
 # CONFIGURATION
 # ===============================
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-if NEWS_API_KEY is None:
-    raise EnvironmentError("NEWS_API_KEY not found in environment variables")
 
 LANGUAGE = "en"
 
 # ===============================
 # INITIALIZE CLIENT
 # ===============================
-newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-
-# ===============================
-# TEST CONNECTION
-# ===============================
-def test_connection():
-    print("Testing connection to NewsAPI...")
+def _get_news_client():
+    """Inicializa NewsApiClient sólo cuando se necesita."""
+    api_key = os.getenv("NEWS_API_KEY")
+    if not api_key:
+        raise EnvironmentError("NEWS_API_KEY not found (set .env locally or Render env vars).")
     try:
-        response = newsapi.get_everything(
-            q="Bitcoin",
-            language=LANGUAGE,
-            page_size=5
+        from newsapi import NewsApiClient
+    except ModuleNotFoundError:
+        raise ModuleNotFoundError(
+            "Missing dependency 'newsapi'. Install pip package: newsapi-python"
         )
-        if response["status"] == "ok":
-            print(f"Connection successful. Total results: {response['totalResults']}")
-            first_article = response["articles"][0]
-            print("\nSample article retrieved:")
-            print(f"- Title: {first_article['title']}")
-            print(f"- Published at: {first_article['publishedAt']}")
-            return True
-        print("API response returned an error.")
-        return False
-    except Exception as e:
-        print(f"Connection error: {e}")
-        return False
+    return NewsApiClient (api_key= api_key)
 
 # ===============================
 # FETCH NEWS
@@ -79,13 +63,18 @@ def fetch_news_by_axis(
     
     if start_date is None or end_date is None:
         raise ValueError("start_date and end_date required if not use_now")
+    
+    newsapi = _get_news_client()
 
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+
     all_news = []
     current_date = start_dt
+
     print("\n--- STARTING NEWS EXTRACTION ---")
     print(f"DATE RANGE: {start_date} to {end_date}")
+
     while current_date < end_dt:
         day_str = current_date.strftime("%Y-%m-%d")
         print(f"\nProcessing day: {day_str}")
@@ -113,11 +102,18 @@ def fetch_news_by_axis(
                 time.sleep(0.5)
             except Exception as e:
                 print(f"  ERROR for axis {axis_name} on {day_str}: {e}")
-                time.sleep(5)
+                time.sleep(2)
+
         current_date += timedelta(days=1)
     print("\n--- NEWS EXTRACTION COMPLETED ---")
-    return pd.DataFrame(all_news)
+    df = pd.DataFrame(all_news)
+    
+    if not df.empty and "published_at" in df.columns:
+        df["published_at"] = pd.to_datetime(df["published_at"], utc=True, errors="coerce")
 
+    return df
+
+"""
 # ===============================
 # ENTRY POINT
 # ===============================
@@ -146,3 +142,4 @@ if __name__ == "__main__":
             print(f"Total articles collected: {len(df_news)}")
         else:
             print("No articles were found for the selected range.")
+"""

@@ -206,7 +206,7 @@ def run_dynamic_predict(
     
     # Load model and predict
     model = load_model(resolution, model_name)
-    pred_dict = run_prediction(features_df, target_ts, model)
+    pred_dict = run_prediction(features_df, target_ts, model, resolution=resolution)
     
     # Placeholder for fusion (e.g., with ARIMA from Carlos)
     # fused_proba = 0.3 * pred_dict['proba_up'] + 0.7 * carlos_proba_up  # Uncomment when ready

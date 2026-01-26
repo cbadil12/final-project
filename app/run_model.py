@@ -11,6 +11,7 @@ import logging
 import pandas as pd
 import numpy as np
 import joblib
+import json
 
 from functools import lru_cache
 
@@ -19,7 +20,15 @@ from functools import lru_cache
 # ===============================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-MODEL_DIR = 'models'  # Relative to app/ (adjust if needed)
+def get_project_root() -> str:
+    cwd = os.getcwd()
+    base = os.path.basename(cwd)
+    if base in {"app", "src", "notebooks"}:
+        return os.path.abspath(os.path.join(cwd, ".."))
+    return cwd
+
+PROJECT_ROOT = get_project_root()
+MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
 MODEL_EXT = '.joblib'
 THRESHOLD = 0.5  # For binary prediction (up if proba_up > threshold)
 DEFAULT_MODEL = 'xgb_clf'  # Default if not specified
@@ -28,6 +37,32 @@ DEFAULT_RESOLUTION = '1h'
 # Supported models and resolutions (from your tree)
 SUPPORTED_MODELS = ['rf_clf', 'xgb_clf']  # Add more if needed
 SUPPORTED_RESOLUTIONS = ['1h', '4h']  # Align with app intervals
+
+# ===============================
+# FEATURE LOADING
+# ===============================
+def load_feature_columns(resolution: str):
+    path = os.path.join(MODEL_DIR, f"feature_columns_{resolution}.json")
+    if not os.path.exists(path):
+        logging.warning(f"Feature columns file not found: {path}")
+        return None
+    with open(path, "r") as f:
+        cols = json.load(f)
+    return cols if isinstance(cols, list) and cols else None
+
+def align_features(df: pd.DataFrame, feature_cols: list) -> pd.DataFrame:
+    out = df.copy()
+    # add missing
+    for c in feature_cols:
+        if c not in out.columns:
+            out[c] = 0
+    # drop extra
+    extra = [c for c in out.columns if c not in feature_cols]
+    if extra:
+        out = out.drop(columns=extra, errors="ignore")
+    # reorder
+    return out[feature_cols]
+
 
 # ===============================
 # MODEL LOADING
@@ -71,6 +106,7 @@ def run_prediction(
     features_df: pd.DataFrame,
     target_ts: pd.Timestamp,
     model,
+    resolution: str,
     drop_cols: list = None  # Optional: cols to drop if not features (e.g., ['timestamp'])
 ) -> dict:
     """
@@ -90,26 +126,22 @@ def run_prediction(
         logging.warning("Empty features DF - returning neutral fallback")
         return {'prediction': 0, 'proba_up': 0.5, 'confidence': 0.5}
     
-    # Ensure index is datetime
+    # Ensure target_ts is UTC Timestamp
+    target_ts = pd.to_datetime(target_ts, utc=True)
+
+    # Ensure index is UTC DatetimeIndex
     if not isinstance(features_df.index, pd.DatetimeIndex):
         features_df.index = pd.to_datetime(features_df.index, utc=True, errors="coerce")
-    
-    # Drop NaT just in case and sort (required for nearest)
-    features_df = features_df[features_df.index.notna()]
-    if features_df.empty:
-        logging.warning("Empty features DF after datetime conversion - returning neutral fallback")
-        return {'prediction': 0, 'proba_up': 0.5, 'confidence': 0.5}
+    else:
+        # force UTC if naive
+        if features_df.index.tz is None:
+            features_df.index = features_df.index.tz_localize("UTC")
 
-    if not features_df.index.is_monotonic_increasing:
-        features_df = features_df.sort_index()
+    features_df = features_df.dropna(axis=0, how="any", subset=[]).sort_index()
 
-    # Select nearest row to target_ts WITHOUT .abs()
+    # Nearest row (robust)
     pos = features_df.index.get_indexer([target_ts], method="nearest")[0]
-    if pos == -1:
-        logging.warning("Could not find nearest timestamp - returning neutral fallback")
-        return {'prediction': 0, 'proba_up': 0.5, 'confidence': 0.5}
-
-    row = features_df.iloc[[pos]]
+    row = features_df.iloc[[pos]].copy()
 
     
     # Drop non-feature cols if specified
@@ -118,6 +150,9 @@ def run_prediction(
     
     # Handle NaNs (simple fill 0 for now - adjust if needed)
     row = row.fillna(0)
+    feature_cols = load_feature_columns(resolution)
+    if feature_cols:
+        row = align_features(row, feature_cols)
     
     # To np.array (1 sample)
     X = row.values.astype(np.float32)
@@ -144,7 +179,7 @@ def run_prediction(
 # ===============================
 if __name__ == "__main__":
     # Path to real data generated in the previous step
-    TEST_INPUT = 'data/processed/aggregated_1h.csv'
+    TEST_INPUT = 'data/interim/aggregated_1h.csv'
     
     if os.path.exists(TEST_INPUT):
         logging.info("--- RUNNING REAL-DATA PREDICTION TEST ---")
@@ -160,7 +195,7 @@ if __name__ == "__main__":
             last_ts = pd.to_datetime(df_features.index[-1])
             
             # 3. Execute prediction
-            result = run_prediction(df_features, last_ts, model)
+            result = run_prediction(df_features, last_ts, model, resolution="1h")
             
             # Final Console Output
             print("\n" + "="*30)
