@@ -28,8 +28,8 @@ HEADERS = {
     "x-cg-pro-api-key": API_KEY  # <-- clave
 }
 
-START_DATE = "2025-12-19"
-END_DATE   = "2026-01-15"
+START_DATE = "2024-12-13"
+END_DATE   = "2026-01-01"
 INTERVAL = "hourly" # 'hourly' or 'daily'
 
 # ===============================
