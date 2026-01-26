@@ -1,0 +1,2 @@
+timestamp,task,model,resolution,prediction,proba_up,confidence
+2025-12-20 20:00:00,price,xgb_price,4h,0,0.2656169831752777,0.7343830168247223

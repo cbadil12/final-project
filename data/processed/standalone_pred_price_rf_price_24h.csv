@@ -1,0 +1,2 @@
+timestamp,task,model,resolution,prediction,proba_up,confidence
+2026-12-01,price,rf_price,24h,1,0.5129511057990632,0.5129511057990632

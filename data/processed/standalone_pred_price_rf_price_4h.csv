@@ -1,0 +1,2 @@
+timestamp,task,model,resolution,prediction,proba_up,confidence
+2025-12-20 20:00:00,price,rf_price,4h,0,0.43645787695953286,0.5635421230404671
