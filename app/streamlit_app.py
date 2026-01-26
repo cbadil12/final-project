@@ -698,7 +698,7 @@ def render_app():
                     dynamic_result = _run_dynamic_predict_cached(
                         target_ts_str=str(target_ts_g),
                         resolution=interval,
-                        mode="historical", #cambiar a "auto" cuando tenga NEWS API
+                        mode="auto", #cambiar a "auto" cuando tenga NEWS API
                         window_hours=24,
                         model_name="xgb_clf"
                     )
@@ -797,7 +797,7 @@ def render_app():
                     dyn_result = _run_dynamic_predict_cached(
                         target_ts_str=str(target_ts),
                         resolution=interval,
-                        mode="historical", #cambiar a "auto" cuando tenga NEWS API
+                        mode="auto", #cambiar a "auto" cuando tenga NEWS API
                         window_hours=24,
                         model_name="xgb_clf"
                     )
