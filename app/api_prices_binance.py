@@ -21,8 +21,8 @@ if API_KEY is None:
 if API_SECRET is None:
     raise EnvironmentError("ERROR: BINANCE_API_SECRET not found in environment variables")
 
-START_DATE = "2025-12-20"
-END_DATE = "2026-01-18"
+START_DATE = "2015-01-05"
+END_DATE = "2015-01-10"
 INTERVAL = "daily"  # "hourly", "4h", or "daily"
 
 INTERVAL_MAP = {
