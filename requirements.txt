@@ -20,4 +20,3 @@ vaderSentiment
 transformers
 torch
 newsapi-python
-python-dotenv
