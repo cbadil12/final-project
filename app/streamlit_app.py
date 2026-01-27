@@ -93,24 +93,28 @@ def _load_prices_compat(path: str) -> pd.DataFrame:
     # Caso C: fallback a loader original
     return load_prices(path)
 
+
 @st.cache_data(show_spinner=False)
 def _run_dynamic_predict_cached(
     target_ts_str: str,
     resolution: str,
+    task: str = "sentiment",
     mode: str = "auto",
     window_hours: int = 24,
     model_name: str = "xgb_clf"
 ):
     if run_dynamic_predict is None:
         return {"msg": "dynamic_predict no disponible", "prediction": None, "confidence": 0.0}
-    
+
     return run_dynamic_predict(
         target_ts=target_ts_str,
         resolution=resolution,
+        task=task,
         mode=mode,
         window_hours=window_hours,
         model_name=model_name
     )
+
 # ------------------ Config Streamlit ------------------
 st.set_page_config(page_title='BTC Predictor', page_icon='📈', layout='wide')
 
@@ -221,10 +225,8 @@ def round_down_to_interval(ts: pd.Timestamp, interval: str) -> pd.Timestamp:
     return ts
 
 
+
 def _nearest_row_by_ts(df: pd.DataFrame, target_ts: pd.Timestamp, ts_col="timestamp"):
-    """Devuelve la fila más cercana en tiempo a target_ts.
-    Si df está vacío o falta ts_col, devuelve None.
-    """
     if df is None or df.empty or ts_col not in df.columns or target_ts is None:
         return None
 
@@ -232,12 +234,19 @@ def _nearest_row_by_ts(df: pd.DataFrame, target_ts: pd.Timestamp, ts_col="timest
     if tmp.empty:
         return None
 
-    # Asegurar tz-awareness comparable
-    tmp[ts_col] = pd.to_datetime(tmp[ts_col], utc=True)
+    tmp[ts_col] = pd.to_datetime(tmp[ts_col], utc=True, errors="coerce")
+    tmp = tmp.dropna(subset=[ts_col]).sort_values(ts_col)
 
-    # índice del más cercano
-    idx = (tmp[ts_col] - target_ts).abs().idxmin()
-    return tmp.loc[idx]
+    pos = tmp[ts_col].searchsorted(target_ts)
+    if pos <= 0:
+        return tmp.iloc[0]
+    if pos >= len(tmp):
+        return tmp.iloc[-1]
+
+    before = tmp.iloc[pos - 1]
+    after = tmp.iloc[pos]
+    return before if abs((before[ts_col] - target_ts).total_seconds()) <= abs((after[ts_col] - target_ts).total_seconds()) else after
+
 
 def _direction_from_pred(base: float | None, pred: float | None, neutral_pct: float = 0.002):
     """Dirección usando cambio relativo vs base.
@@ -276,6 +285,75 @@ def _get_base_price_for_target(price_pack, fallback_df, target_ts: pd.Timestamp,
             return float(prev["price"].iloc[0])
 
     return None
+
+
+def _sentiment_label_to_class(sentiment_label: str | None):
+    """Mapea etiqueta de sentimiento a clase: Positivo=1, Negativo=0, Neutral=None."""
+    if sentiment_label == "Positivo":
+        return 1
+    if sentiment_label == "Negativo":
+        return 0
+    return None  # Neutral o desconocido
+
+def combine_final_signal(price_pred: int | None, sentiment_label: str | None):
+    """
+    Regla final (la que definiste):
+    - Precio SUBIDA + Sentimiento Positivo/Neutral => SUBIDA
+    - Precio BAJADA + Sentimiento Negativo/Neutral => BAJADA
+    - Si chocan => ESCENARIO MIXTO
+    - Si falta uno => usa el que esté disponible, si no => NEUTRAL
+    """
+    sent_cls = _sentiment_label_to_class(sentiment_label)
+
+    # Si hay precio, la señal base la decide precio salvo que choque con sentimiento
+    if price_pred in (0, 1):
+        if sent_cls is None:
+            # Neutral => acompaña al precio
+            return ("SUBIDA", "green") if price_pred == 1 else ("BAJADA", "red")
+        if price_pred == sent_cls:
+            return ("SUBIDA", "green") if price_pred == 1 else ("BAJADA", "red")
+        return ("ESCENARIO MIXTO", "gray")
+
+    # Si no hay precio, usa sentimiento si es Pos/Neg
+    if sent_cls in (0, 1):
+        return ("SUBIDA", "green") if sent_cls == 1 else ("BAJADA", "red")
+
+    return ("ESCENARIO NEUTRAL", "gray")
+
+def render_price_block(price_result: dict | None, horizon_label: str, debug_mode: bool):
+    """Muestra la predicción técnica (precio) de forma consistente."""
+    st.subheader("Predicción técnica (precio)")
+
+    if isinstance(price_result, dict) and price_result.get("prediction") is not None:
+        pr_cls = price_result.get("prediction")
+        pr_conf = price_result.get("confidence", None)
+
+        label = "SUBIDA" if pr_cls == 1 else "BAJADA"
+        pr_color = "green" if pr_cls == 1 else "red"
+
+        st.markdown(
+            f"<h4 style='color:{pr_color}; margin:0'>{label} ({horizon_label})</h4>",
+            unsafe_allow_html=True
+        )
+
+        try:
+            pr_prog = int(max(0, min(100, float(pr_conf) * 100))) if pr_conf is not None else 50
+        except Exception:
+            pr_prog = 50
+
+        st.progress(pr_prog)
+
+        if "proba_up" in price_result:
+            try:
+                st.caption(f"proba_up: {float(price_result['proba_up']):.2f}")
+            except Exception:
+                pass
+
+        if debug_mode:
+            with st.expander("Detalles precio (debug)", expanded=False):
+                st.write(price_result)
+    else:
+        st.info("Pulsa 🚀 Ejecutar Predicción para calcular la predicción de precio.")
 
 # ------------------ Vistas ------------------
 def render_home():
@@ -438,22 +516,41 @@ def render_app():
     # Granularidad
     interval_options = ["1h", "4h"]
     interval = st.sidebar.selectbox(
-        "Granularidad",
+        "Granularidad (gráfico)",
         interval_options,
-        index=interval_options.index(st.session_state.get("interval", "1h")) if st.session_state.get("interval", "1h") in interval_options else 0,
+        index=interval_options.index(st.session_state.get("interval", "1h"))
+            if st.session_state.get("interval", "1h") in interval_options else 0,
         key="interval",
-        help="Frecuencia del precio. La predicción t+1 sigue esta granularidad."
+        help="Frecuencia del precio para el gráfico (OHLC/linea)."
     )
 
     INTERVAL_TO_HOURS = {"1h": 1, "4h": 4}
     horizon_hours = INTERVAL_TO_HOURS.get(interval, 1)
-    st.sidebar.caption(f"Predicción: **t+1** (siguiente {interval} → +{horizon_hours}h)")
+    st.sidebar.caption(f"Predicción sentimiento: **t+1** (siguiente {interval} → +{horizon_hours}h)")
+
+    
+    # Horizonte precio = igual que granularidad del gráfico (simple y coherente)
+    price_horizon = interval
+    price_horizon_hours = horizon_hours
+
+    
+    # PENDIENTE si se borra o no ---------------- Horizonte (para el MODELO DE PRECIO) ----------------
+    #price_horizon_options = ["1h", "4h", "24h"]
+    #price_horizon = st.sidebar.selectbox(
+        #"Horizonte predicción (precio)",
+        #price_horizon_options,
+        #index=price_horizon_options.index(st.session_state.get("price_horizon", "24h"))
+            #if st.session_state.get("price_horizon", "24h") in price_horizon_options else 2,
+        #key="price_horizon",
+        #help="Horizonte del modelo de precio (dirección). 24h funciona como proxy 'diario' más estable."
+    #)
+
+    #PRICE_HORIZON_TO_HOURS = {"1h": 1, "4h": 4, "24h": 24}
+    #price_horizon_hours = PRICE_HORIZON_TO_HOURS.get(price_horizon, 24)
+    #st.sidebar.caption(f"Predicción precio: **t+{price_horizon}** (→ +{price_horizon_hours}h)")
 
     # -------------- Nueva selección de datasets según granularidad --------------
-    if interval == "1h":
-        price_path = PRICE_1H_RAW_PATH
-    else:
-        price_path = PRICE_4H_RAW_PATH
+    price_path = PRICE_1H_RAW_PATH
     
     news_path = NEWS_RAW_PATH
 
@@ -690,92 +787,95 @@ def render_app():
                     pred_rf = row["y_pred"].iloc[0] if "y_pred" in row.columns else None
                     pred_rf_proba = row["proba_up"].iloc[0] if "proba_up" in row.columns else None
 
-            # --- Predicción dinámica (Adri) si el usuario presiona el botón ---
+            # --- Predicción dinámica si el usuario presiona el botón ---
             dyn_pred_class = None
             dyn_conf = None
+
             if run_pred and target_ts_g is not None:
-                with st.spinner("Ejecutando predicción dinámica (Global)…"):
+                with st.spinner("Ejecutando predicción dinámica (Sentimiento)…"):
                     dynamic_result = _run_dynamic_predict_cached(
                         target_ts_str=str(target_ts_g),
-                        resolution=interval,
-                        mode="auto", #cambiar a "auto" cuando tenga NEWS API
+                        resolution=interval,          # 1h/4h (del gráfico)
+                        task="sentiment",
+                        mode="auto",                  # live si está fuera del histórico
                         window_hours=24,
                         model_name="xgb_clf"
                     )
-                # Guardar resultado (para mostrarlo también en la pestaña Predicción)
+
                 st.session_state["__dyn_global_result__"] = dynamic_result
 
-                # Mostrar el mensaje si existe
                 if isinstance(dynamic_result, dict) and dynamic_result.get("msg"):
-                    st.info(f"DynamicPredict: {dynamic_result['msg']}")
-                            
+                    st.info(f"DynamicPredict (sentiment): {dynamic_result['msg']}")
+
                 if isinstance(dynamic_result, dict):
-                    dyn_pred_class = dynamic_result.get("prediction", None)  # 0/1
-                    dyn_conf = dynamic_result.get("confidence", None)        # 0..1
+                    dyn_pred_class = dynamic_result.get("prediction", None)
+                    dyn_conf = dynamic_result.get("confidence", None)
 
-            # --- Señal final (prioridad: dinámico > CSV > sentimiento) ---
-            final_label, color, delta = "ESCENARIO NEUTRAL", "gray", None
-            signal_source = "sentiment"
+                # ---- Predicción dinámica de PRECIO (dirección) ----
+                target_ts_price = last_seen_ts + pd.Timedelta(hours=price_horizon_hours)
 
-            if dyn_pred_class is not None:
-                signal_source = "dynamic"
-                if dyn_pred_class == 1:
-                    final_label, color = "SUBIDA", "green"
-                elif dyn_pred_class == 0:
-                    final_label, color = "BAJADA", "red"
+                with st.spinner(f"Ejecutando predicción dinámica (Precio {price_horizon})…"):
+                    price_result = _run_dynamic_predict_cached(
+                        target_ts_str=str(target_ts_price),
+                        resolution=price_horizon,     # 1h/4h/24h (horizonte de precio)
+                        task="price",
+                        mode="historical",            # por ahora, hasta integrar fetch de precios live
+                        window_hours=24,
+                        model_name="xgb_price"
+                    )
 
-                if dyn_conf is not None:
-                    try:
-                        prob = int(max(0, min(100, float(dyn_conf) * 100)))
-                    except Exception:
-                        pass
+                st.session_state["__dyn_global_price_result__"] = price_result
 
-            elif (not run_pred) and pred_rf is not None:
-                signal_source = "csv"
-                try:
-                    cls = int(pred_rf)
-                except Exception:
-                    cls = None
+                if isinstance(price_result, dict) and price_result.get("msg"):
+                    st.info(f"DynamicPredict (price): {price_result['msg']}")
 
-                if cls == 1:
-                    final_label, color = "SUBIDA", "green"
-                elif cls == 0:
-                    final_label, color = "BAJADA", "red"
 
-                # confianza desde proba_up
-                if pred_rf_proba is not None:
-                    try:
-                        p = float(pred_rf_proba)
-                        prob = int(max(0, min(100, max(p, 1 - p) * 100)))
-                    except Exception:
-                        pass
-
-            else:
-                # fallback a sentimiento (ya calculado arriba)
-                signal_source = "sentiment"
-                if sentiment_score > 0.05:
-                    final_label, color = "SUBIDA", "green"
-                elif sentiment_score < -0.05:
-                    final_label, color = "BAJADA", "red"
-                else:
-                    final_label, color = "ESCENARIO NEUTRAL", "gray"
             
-    
-            st.subheader("Señal final")
-            st.markdown(f"<h3 style='color:{color}; margin:0'>{final_label}</h3>", unsafe_allow_html=True)
-            st.progress(prob)
+            # ====================== BLOQUE FINAL GLOBAL (ORDEN: Sentimiento -> Precio -> Señal final) ======================
 
+            # 1) Predicción técnica de PRECIO (ya la guardaste cuando run_pred)
+            price_result = st.session_state.get("__dyn_global_price_result__")
+
+            # Mostrar bloque de precio (t+interval o el horizon que uses)
+            render_price_block(price_result, horizon_label=price_horizon, debug_mode=debug_mode)
+
+            # 2) Construir señal final combinada (Precio + Sentimiento)
+            price_cls = None
+            price_conf = None
+            if isinstance(price_result, dict):
+                price_cls = price_result.get("prediction")
+                price_conf = price_result.get("confidence")
+
+            # sentiment_label ya existe en Global (Positivo/Negativo/Neutral) por tu cálculo con news
+            final_label, final_color = combine_final_signal(price_cls, sentiment_label)
+
+            # confianza final: prioriza precio si existe, si no usa la del modelo de sentimiento si existe, si no 50%
+            final_conf = price_conf if price_conf is not None else dyn_conf
+            try:
+                prob_final = int(max(0, min(100, float(final_conf) * 100))) if final_conf is not None else 50
+            except Exception:
+                prob_final = 50
+
+            # 3) Mostrar Señal final (COMBINADA)
+            st.subheader("Señal final")
+            st.markdown(
+                f"<h3 style='color:{final_color}; margin:0'>{final_label}</h3>",
+                unsafe_allow_html=True
+            )
+            st.progress(prob_final)
+
+            # Debug opcional
             if debug_mode:
                 with st.expander("Detalles técnicos (debug)", expanded=False):
-                    st.write({"dyn_pred_class": dyn_pred_class, "dyn_conf": dyn_conf, "pred_used": pred_used})
-                    st.write({"signal_source": signal_source, "pred_rf": pred_rf, "pred_rf_proba": pred_rf_proba})
-                    if target_ts_g is not None:
-                        st.write(f"t: {last_seen_ts:%Y-%m-%d %H:%M} UTC → t+1: {target_ts_g:%Y-%m-%d %H:%M} UTC")
-                    if last_price is not None and pred_used is not None and delta is not None:
-                        st.write(f"Base: {last_price:,.2f} → Pred: {pred_used:,.2f} (Δ {delta:+.2%})")
-                    else:
-                        st.write("No hay predicción disponible para t+1 (faltan CSVs o fila exacta).")
-
+                    st.write({
+                        "sentiment_label": sentiment_label,
+                        "price_prediction": price_cls,
+                        "price_conf": price_conf,
+                        "dyn_sent_prediction": dyn_pred_class,
+                        "dyn_sent_conf": dyn_conf,
+                        "final_label": final_label
+                    })        
+ 
         else:
             # Regímenes: usar predicción dinámica al pulsar botón; fallback a tendencia si no hay resultado
             target_ts = st.session_state.get("__regime_target_ts__")
@@ -791,54 +891,88 @@ def render_app():
 
             # --- Ejecutar predicción dinámica SOLO si el usuario presiona el botón ---
             dyn_result = st.session_state.get("__dyn_reg_result__")
+            price_result_reg = st.session_state.get("__dyn_reg_price_result__")
 
             if run_pred and target_ts is not None:
-                with st.spinner("Ejecutando Prerdicción dinámica - Regímenes..."):
+                # 1) SENTIMIENTO (clasificación)
+                with st.spinner("Ejecutando predicción dinámica (Sentimiento) - Regímenes…"):
                     dyn_result = _run_dynamic_predict_cached(
                         target_ts_str=str(target_ts),
                         resolution=interval,
-                        mode="auto", #cambiar a "auto" cuando tenga NEWS API
+                        task="sentiment",
+                        mode="auto",          # live solo si está fuera del histórico (según tu backend)
                         window_hours=24,
                         model_name="xgb_clf"
                     )
                 st.session_state["__dyn_reg_result__"] = dyn_result
-            
-            # -- Interpretación del resultado dinámico (prediction = clase 0/1) ---
-            pred_class =  None
+
+                # 2) PRECIO (dirección)
+                target_ts_price = target_ts + pd.Timedelta(hours=price_horizon_hours)
+                with st.spinner(f"Ejecutando predicción dinámica (Precio {price_horizon}) - Regímenes…"):
+                    price_result_reg = _run_dynamic_predict_cached(
+                        target_ts_str=str(target_ts_price),
+                        resolution=price_horizon,     # en tu caso = interval
+                        task="price",
+                        mode="historical",            # por ahora (hasta integrar live de precios)
+                        window_hours=24,
+                        model_name="xgb_price"
+                    )
+                st.session_state["__dyn_reg_price_result__"] = price_result_reg
+
+            # ====================== BLOQUE FINAL REGÍMENES (ORDEN: Sentimiento -> Precio -> Señal final) ======================
+
+            # 1) Derivar etiqueta de sentimiento desde dyn_result (aquí no usamos news_window)
+            sentiment_label_reg = "Neutral"
+            sent_conf = None
+
             if isinstance(dyn_result, dict):
                 pred_class = dyn_result.get("prediction", None)
-                conf = dyn_result.get("confidence",None)
+                sent_conf = dyn_result.get("confidence", None)
+                if pred_class == 1:
+                    sentiment_label_reg = "Positivo"
+                elif pred_class == 0:
+                    sentiment_label_reg = "Negativo"
 
-            if pred_class ==1:
-                final_label, color = "SUBIDA", "green"
-            elif pred_class == 0:
-                final_label, color = "BAJADA", "red"
-            else:
-                # 3) Fallback final tendencia reciente - si no hay resultado dinámico
-                if len(last_series) >= 2 and base_ref is not None:
-                    prev_ref = float(last_series.iloc[-2]["price"])
-                    if base_ref > prev_ref:
-                        final_label, color = "SUBIDA", "green"
-                    elif base_ref < prev_ref:
-                        final_label, color = "BAJADA", "red"
+            # Mostrar el bloque de "Predicción técnica (precio)" usando el helper que ya tienes
+            price_result_reg = st.session_state.get("__dyn_reg_price_result__")
+            render_price_block(price_result_reg, horizon_label=price_horizon, debug_mode=debug_mode)
 
-            # ✅ SIEMPRE mostrar Señal final en Regímenes
-            st.subheader("Señal final")
-            st.markdown(f"<h3 style='color:{color}; margin:0'>{final_label}</h3>", unsafe_allow_html=True)
-            
-            # Progreso: usar confianza si existe, si no neutral 50%
+            # 2) Construir señal final combinada (Precio + Sentimiento)
+            price_cls = None
+            price_conf = None
+            if isinstance(price_result_reg, dict):
+                price_cls = price_result_reg.get("prediction", None)
+                price_conf = price_result_reg.get("confidence", None)
+
+            final_label, final_color = combine_final_signal(price_cls, sentiment_label_reg)
+
+            # 3) Confianza final: prioriza precio si existe, si no sentimiento, si no 50%
+            final_conf = price_conf if price_conf is not None else sent_conf
             try:
-                prog = int(max(0, min(100, float(conf) * 100))) if conf is not None else 50
+                prog = int(max(0, min(100, float(final_conf) * 100))) if final_conf is not None else 50
             except Exception:
                 prog = 50
+
+            # 4) Mostrar Señal final (COMBINADA)
+            st.subheader("Señal final")
+            st.markdown(
+                f"<h3 style='color:{final_color}; margin:0'>{final_label}</h3>",
+                unsafe_allow_html=True
+            )
             st.progress(prog)
 
-            # Debug opcional (solo si toggle es activado)
+            # Debug opcional
             if debug_mode:
                 with st.expander("Detalles técnicos (debug)", expanded=False):
-                    st.write({"regime": regime, "target_ts": str(target_ts)})
-                    st.write({"base_ref": base_ref})
-                    st.write({"dyn_result": dyn_result})
+                    st.write({
+                        "regime": regime,
+                        "target_ts": str(target_ts),
+                        "sentiment_label_reg": sentiment_label_reg,
+                        "price_prediction": price_cls,
+                        "final_label": final_label,
+                        "dyn_sent_result": dyn_result,
+                        "dyn_price_result": price_result_reg,
+                    })          
 
     st.divider()
 

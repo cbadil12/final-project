@@ -20,3 +20,4 @@ vaderSentiment
 transformers
 torch
 newsapi-python
+python-binance

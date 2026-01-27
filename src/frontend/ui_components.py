@@ -15,10 +15,9 @@ def candlestick_chart(df_ohlc: pd.DataFrame, ts_col: str = 'timestamp'):
     base = alt.Chart(df_ohlc).encode(x=f'{ts_col}:T')
 
     # ----- Línea vertical high-low -----
-    rule = base.mark_rule().encode(
-        y='low:Q',
+    rule = base.mark_rule(color='white', size=1.5).encode(
+        y=alt.Y('low:Q', scale=alt.Scale(zero=False)),
         y2='high:Q',
-        tooltip=[f'{ts_col}:T','open:Q','high:Q','low:Q','close:Q']
     )
 
     # ----- Cuerpo de la vela -----
@@ -29,10 +28,21 @@ def candlestick_chart(df_ohlc: pd.DataFrame, ts_col: str = 'timestamp'):
             'datum.open <= datum.close',
             alt.value('#22a884'),  # verde
             alt.value("#b91e0d")   # rojo
-        )
+        ),
+        tooltip=[f'{ts_col}:T','open:Q','high:Q','low:Q','close:Q']
     )
 
-    return rule + bar
+    chart = (rule + bar).properties(
+        width='container'
+    ).configure_view(
+        strokeWidth=0
+    ).configure_axis(
+        gridColor='#333333',
+        labelColor='white',
+        titleColor='white'
+    )
+
+    return chart
 
 
 def line_with_ma(df: pd.DataFrame, ts_col: str = 'timestamp', price_col: str = 'price', ma_window: int = 24):

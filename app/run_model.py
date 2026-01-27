@@ -35,17 +35,34 @@ DEFAULT_MODEL = 'xgb_clf'  # Default if not specified
 DEFAULT_RESOLUTION = '1h'
 
 # Supported models and resolutions (from your tree)
-SUPPORTED_MODELS = ['rf_clf', 'xgb_clf']  # Add more if needed
-SUPPORTED_RESOLUTIONS = ['1h', '4h']  # Align with app intervals
+SUPPORTED = {
+    "sentiment": {
+        "models": ["rf_clf", "xgb_clf"],
+        "resolutions": ["1h", "4h", "24h"],
+    },
+    "price": {
+        "models": ["rf_price", "xgb_price"],
+        "resolutions": ["1h", "4h", "24h"],
+    },
+}
 
 # ===============================
 # FEATURE LOADING
 # ===============================
-def load_feature_columns(resolution: str):
-    path = os.path.join(MODEL_DIR, f"feature_columns_{resolution}.json")
+def load_feature_columns(task: str, model_name: str, resolution: str):
+    # sentiment: feature_columns_{resolution}.json  (legacy)
+    # price:     feature_columns_{model_name}_{resolution}.json (nuevo)
+    if task == "sentiment":
+        path = os.path.join(MODEL_DIR, f"feature_columns_{resolution}.json")
+    elif task == "price":
+        path = os.path.join(MODEL_DIR, f"feature_columns_{model_name}_{resolution}.json")
+    else:
+        raise ValueError("task must be 'sentiment' or 'price'")
+
     if not os.path.exists(path):
         logging.warning(f"Feature columns file not found: {path}")
         return None
+
     with open(path, "r") as f:
         cols = json.load(f)
     return cols if isinstance(cols, list) and cols else None
@@ -67,37 +84,30 @@ def align_features(df: pd.DataFrame, feature_cols: list) -> pd.DataFrame:
 # ===============================
 # MODEL LOADING
 # ===============================
-@lru_cache(maxsize=8)
-def load_model(resolution: str = DEFAULT_RESOLUTION, model_name: str = DEFAULT_MODEL):
-    """
-    Loads the pre-trained model from disk.
-    Args:
-        resolution: '1h' or '4h'
-        model_name: 'xgb_clf', 'rf_clf', etc.
-    Returns:
-        Loaded model object
-    Raises:
-        ValueError if unsupported, FileNotFoundError if missing
-    """
-    if resolution not in SUPPORTED_RESOLUTIONS:
-        raise ValueError(f"Unsupported resolution: {resolution}. Supported: {SUPPORTED_RESOLUTIONS}")
-    
-    if model_name not in SUPPORTED_MODELS:
-        raise ValueError(f"Unsupported model: {model_name}. Supported: {SUPPORTED_MODELS}")
-    
+@lru_cache(maxsize=16)
+def load_model(task: str = "sentiment", resolution: str = DEFAULT_RESOLUTION, model_name: str = DEFAULT_MODEL):
+    if task not in SUPPORTED:
+        raise ValueError(f"Unsupported task: {task}. Supported: {list(SUPPORTED.keys())}")
+
+    if resolution not in SUPPORTED[task]["resolutions"]:
+        raise ValueError(
+            f"Unsupported resolution for {task}: {resolution}. Supported: {SUPPORTED[task]['resolutions']}"
+        )
+
+    if model_name not in SUPPORTED[task]["models"]:
+        raise ValueError(
+            f"Unsupported model for {task}: {model_name}. Supported: {SUPPORTED[task]['models']}"
+        )
+
     model_filename = f"{model_name}_{resolution}{MODEL_EXT}"
     model_path = os.path.join(MODEL_DIR, model_filename)
-    
+
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model not found at {model_path}")
-    
-    try:
-        model = joblib.load(model_path)
-        logging.info(f"✅ Model loaded: {model_filename}")
-        return model
-    except Exception as e:
-        logging.error(f"Error loading model {model_filename}: {e}")
-        raise
+
+    model = joblib.load(model_path)
+    logging.info(f"✅ Model loaded: {model_filename}")
+    return model
 
 # ===============================
 # PREDICTION FUNCTION
@@ -107,69 +117,81 @@ def run_prediction(
     target_ts: pd.Timestamp,
     model,
     resolution: str,
-    drop_cols: list = None  # Optional: cols to drop if not features (e.g., ['timestamp'])
+    task: str,
+    model_name: str,
+    drop_cols: list = None
 ) -> dict:
     """
     Runs prediction on the features DF for the target_ts.
-    Selects nearest/exact row, prepares input, predicts proba.
-    
+    Selects nearest row, aligns features with training schema, predicts proba.
+
     Args:
-        features_df: DF from aggregate_features (index: timestamp, cols: features)
+        features_df: DF with datetime index and feature columns
         target_ts: Timestamp to predict for (UTC)
         model: Loaded model object
-        drop_cols: List of non-feature cols to drop (default: none)
-    
+        resolution: '1h' | '4h' | '24h'
+        task: 'sentiment' | 'price'
+        model_name: model identifier (e.g. rf_price, xgb_clf)
+        drop_cols: Optional list of non-feature columns to drop
+
     Returns:
-        dict: {'prediction': 0/1 (down/up), 'proba_up': float, 'confidence': float}
+        dict: {'prediction': 0/1, 'proba_up': float, 'confidence': float}
     """
-    if features_df.empty:
+    # --- empty safety
+    if features_df is None or features_df.empty:
         logging.warning("Empty features DF - returning neutral fallback")
         return {'prediction': 0, 'proba_up': 0.5, 'confidence': 0.5}
-    
-    # Ensure target_ts is UTC Timestamp
+
+    # --- ensure UTC timestamp
     target_ts = pd.to_datetime(target_ts, utc=True)
 
-    # Ensure index is UTC DatetimeIndex
+    # --- ensure DatetimeIndex UTC
     if not isinstance(features_df.index, pd.DatetimeIndex):
         features_df.index = pd.to_datetime(features_df.index, utc=True, errors="coerce")
-    else:
-        # force UTC if naive
-        if features_df.index.tz is None:
-            features_df.index = features_df.index.tz_localize("UTC")
+    elif features_df.index.tz is None:
+        features_df.index = features_df.index.tz_localize("UTC")
 
-    features_df = features_df.dropna(axis=0, how="any", subset=[]).sort_index()
+    features_df = features_df.sort_index()
 
-    # Nearest row (robust)
-    pos = features_df.index.get_indexer([target_ts], method="nearest")[0]
-    row = features_df.iloc[[pos]].copy()
+    # --- find nearest row
+    try:
+        pos = features_df.index.get_indexer([target_ts], method="nearest")[0]
+        row = features_df.iloc[[pos]].copy()
+    except Exception as e:
+        logging.error(f"Failed to select row for {target_ts}: {e}")
+        return {'prediction': 0, 'proba_up': 0.5, 'confidence': 0.5}
 
-    
-    # Drop non-feature cols if specified
+    # --- drop non-feature cols
     if drop_cols:
-        row = row.drop(columns=[c for c in drop_cols if c in row.columns], errors='ignore')
-    
-    # Handle NaNs (simple fill 0 for now - adjust if needed)
-    row = row.fillna(0)
-    feature_cols = load_feature_columns(resolution)
+        row = row.drop(columns=[c for c in drop_cols if c in row.columns], errors="ignore")
+
+    # --- load schema used in training
+    feature_cols = load_feature_columns(task, model_name, resolution)
     if feature_cols:
         row = align_features(row, feature_cols)
-    
-    # To np.array (1 sample)
-    X = row.values.astype(np.float32)
-    
+
+    # --- final NaN safety
+    row = row.fillna(0.0)
+
+    # --- predict
     try:
-        proba = model.predict_proba(X)[0]  # Assumes binary classifier [down, up]
-        proba_up = proba[1]  # Probability of class 1 (up)
-        pred = 1 if proba_up > THRESHOLD else 0
-        confidence = max(proba_up, 1 - proba_up)  # Higher prob wins
-        
-        logging.info(f"Prediction for {target_ts}: pred={pred}, proba_up={proba_up:.3f}, conf={confidence:.3f}")
-        
+        X = row.values.astype(np.float32)
+        proba = model.predict_proba(X)[0]
+        proba_up = float(proba[1])
+        pred = 1 if proba_up >= THRESHOLD else 0
+        confidence = max(proba_up, 1 - proba_up)
+
+        logging.info(
+            f"[{task.upper()} | {model_name} | {resolution}] "
+            f"ts={target_ts} pred={pred} proba_up={proba_up:.3f}"
+        )
+
         return {
-            'prediction': pred,
-            'proba_up': proba_up,
-            'confidence': confidence
+            "prediction": pred,
+            "proba_up": proba_up,
+            "confidence": confidence,
         }
+
     except Exception as e:
         logging.error(f"Prediction error: {e}")
         return {'prediction': 0, 'proba_up': 0.5, 'confidence': 0.5}
@@ -178,35 +200,101 @@ def run_prediction(
 # ENTRY POINT (for standalone test)
 # ===============================
 if __name__ == "__main__":
-    # Path to real data generated in the previous step
-    TEST_INPUT = 'data/interim/aggregated_1h.csv'
-    
-    if os.path.exists(TEST_INPUT):
-        logging.info("--- RUNNING REAL-DATA PREDICTION TEST ---")
-        
-        # Load the aggregated features
-        df_features = pd.read_csv(TEST_INPUT, index_col=0)
-        
-        try:
-            # 1. Load the specific model
-            model = load_model(resolution='1h', model_name='xgb_clf')
-            
-            # 2. Get the most recent timestamp from our data
-            last_ts = pd.to_datetime(df_features.index[-1])
-            
-            # 3. Execute prediction
-            result = run_prediction(df_features, last_ts, model, resolution="1h")
-            
-            # Final Console Output
-            print("\n" + "="*30)
-            print(f"🚀 PREDICTION FOR: {last_ts}")
-            print(f"DIRECTION: {'UP 📈' if result['prediction'] == 1 else 'DOWN 📉'}")
-            print(f"PROBABILITY: {result['proba_up']:.4f}")
-            print(f"CONFIDENCE: {result['confidence']:.2%}")
-            print("="*30 + "\n")
-            
-        except Exception as e:
-            logging.error(f"Test failed during execution: {e}")
-    else:
-        logging.warning(f"Test skipped: Input file not found at {TEST_INPUT}")
-        logging.info("Please run 'aggregate_features.py' first to generate test data.")
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", choices=["sentiment", "price"], default="sentiment")
+    parser.add_argument("--resolution", choices=["1h", "4h", "24h"], default="1h")
+    parser.add_argument("--model", default=None)  # si None -> usa DEFAULT_MODEL según task
+    parser.add_argument("--input", default=None)  # ruta al features CSV
+    parser.add_argument("--dump_csv", action="store_true")  # guarda salida a data/processed/
+    parser.add_argument("--all", action="store_true")  # corre todos los modelos/resoluciones del task
+    args = parser.parse_args()
+
+    # defaults por task
+    default_model_by_task = {
+        "sentiment": "xgb_clf",
+        "price": "rf_price",
+    }
+
+    # input por defecto (solo para test rápido)
+    default_input_by_task = {
+        "sentiment": {
+            "1h": "data/interim/aggregated_1h.csv",
+            "4h": "data/interim/aggregated_4h.csv",
+            "24h": "data/interim/aggregated_24h.csv",
+        },
+        "price": {
+            "1h": "data/interim/price_features_1h.csv",
+            "4h": "data/interim/price_features_4h.csv",
+            "24h": "data/interim/price_features_24h.csv",
+        },
+    }
+
+    task = args.task
+    if task not in SUPPORTED:
+        raise ValueError(f"Unsupported task: {task}")
+
+    # función helper para ejecutar 1 combo
+    def _run_one(task: str, resolution: str, model_name: str, input_path: str):
+        if not os.path.exists(input_path):
+            logging.warning(f"Test skipped (missing input): {input_path}")
+            return
+
+        df_features = pd.read_csv(input_path, index_col=0)
+
+        model = load_model(task=task, resolution=resolution, model_name=model_name)
+        last_ts = pd.to_datetime(df_features.index[-1])
+
+        result = run_prediction(
+            df_features,
+            last_ts,
+            model,
+            resolution=resolution,
+            task=task,
+            model_name=model_name,
+        )
+
+        print("\n" + "=" * 40)
+        print(f"✅ TASK={task} | MODEL={model_name} | RES={resolution}")
+        print(f"TS: {last_ts}")
+        print(f"DIRECTION: {'UP 📈' if result['prediction'] == 1 else 'DOWN 📉'}")
+        print(f"PROBA_UP: {result['proba_up']:.4f}")
+        print(f"CONFIDENCE: {result['confidence']:.2%}")
+        print("=" * 40 + "\n")
+
+        if args.dump_csv:
+            os.makedirs("data/processed", exist_ok=True)
+            out_path = os.path.join(
+                "data/processed",
+                f"standalone_pred_{task}_{model_name}_{resolution}.csv"
+            )
+            pd.DataFrame([{
+                "timestamp": last_ts,
+                "task": task,
+                "model": model_name,
+                "resolution": resolution,
+                "prediction": result["prediction"],
+                "proba_up": result["proba_up"],
+                "confidence": result["confidence"],
+            }]).to_csv(out_path, index=False)
+            logging.info(f"Saved standalone CSV: {out_path}")
+
+    # --- ALL MODE
+    if args.all:
+        for res in SUPPORTED[task]["resolutions"]:
+            for m in SUPPORTED[task]["models"]:
+                input_path = default_input_by_task[task].get(res)
+                if input_path:
+                    _run_one(task, res, m, input_path)
+        raise SystemExit(0)
+
+    # --- single run
+    resolution = args.resolution
+    model_name = args.model or default_model_by_task[task]
+    input_path = args.input or default_input_by_task[task].get(resolution)
+
+    if input_path is None:
+        raise ValueError("No input path provided. Use --input <path_to_features_csv>")
+
+    _run_one(task, resolution, model_name, input_path)

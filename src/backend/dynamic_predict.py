@@ -33,9 +33,10 @@ DEFAULT_MODEL = 'xgb_clf'
 # ===============================
 # HELPER FUNCTIONS
 # ===============================
-def load_dataset(resolution: str) -> pd.DataFrame:
+
+def load_dataset(resolution: str, task: str = "sentiment") -> pd.DataFrame:
     """
-    Loads the historical preprocessed dataset for the resolution.
+    Loads the historical preprocessed dataset for the task+resolution.
     Accepts either 'timestamp' or 'datetime' as time column.
     Returns a DF indexed by timestamp (UTC), sorted.
     """
@@ -44,13 +45,21 @@ def load_dataset(resolution: str) -> pd.DataFrame:
     project_root = Path(__file__).resolve().parents[2]
     data_processed_dir = project_root / "data" / "processed"
 
-    filename = f'dataset_sentiment_target_{resolution}.csv'
+    # ✅ Elegir dataset según task
+    if task == "sentiment":
+        filename = f"dataset_sentiment_target_{resolution}.csv"
+    elif task == "price":
+        filename = f"dataset_price_target_{resolution}.csv"
+    else:
+        logging.error(f"Unsupported task: {task}")
+        return pd.DataFrame()
+
     path = data_processed_dir / filename
 
     if not path.exists():
-        logging.warning(f"Historical dataset not found: {path} - fallback to live mode")
+        logging.warning(f"Historical dataset not found: {path}")
         return pd.DataFrame()
-    
+
     df = pd.read_csv(path)
     df.columns = [c.strip() for c in df.columns]
 
@@ -67,8 +76,9 @@ def load_dataset(resolution: str) -> pd.DataFrame:
     df[time_col] = pd.to_datetime(df[time_col], utc=True, errors="coerce")
     df = df.dropna(subset=[time_col]).set_index(time_col).sort_index()
 
-    logging.info(f"Loaded historical dataset: {len(df)} rows (time_col={time_col})")
+    logging.info(f"Loaded dataset: {filename} ({len(df)} rows, time_col={time_col})")
     return df
+
 
 
 def get_features_from_dataset(df: pd.DataFrame, target_ts: pd.Timestamp) -> pd.DataFrame:
@@ -161,6 +171,7 @@ def get_features_live(
 def run_dynamic_predict(
     target_ts: str | pd.Timestamp | datetime,
     resolution: str,
+    task: str = "sentiment",
     mode: str = 'auto',
     window_hours: int = WINDOW_HOURS_DEFAULT,
     model_name: str = DEFAULT_MODEL
@@ -179,7 +190,7 @@ def run_dynamic_predict(
         return {'msg': "Invalid resolution (must be '1h' or '4h')", 'prediction': None}
     
     # Load historical dataset for mode auto/historical
-    df_hist = load_dataset(resolution)
+    df_hist = load_dataset(resolution, task=task)
     
     # Determine mode
     mode_used = mode
@@ -205,8 +216,16 @@ def run_dynamic_predict(
         return {'msg': "No features available", 'prediction': None}
     
     # Load model and predict
-    model = load_model(resolution, model_name)
-    pred_dict = run_prediction(features_df, target_ts, model, resolution=resolution)
+    model = load_model(task=task, resolution=resolution, model_name=model_name)
+
+    pred_dict = run_prediction(
+        features_df,
+        target_ts,
+        model,
+        resolution=resolution,
+        task=task,
+        model_name=model_name,
+    )
     
     # Placeholder for fusion (e.g., with ARIMA from Carlos)
     # fused_proba = 0.3 * pred_dict['proba_up'] + 0.7 * carlos_proba_up  # Uncomment when ready
