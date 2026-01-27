@@ -19,6 +19,7 @@ from app.download_last_fng import download_latest_fng
 from app.compute_sentiment import run_sentiment_analysis
 from app.aggregate_features import aggregate_features
 from app.price_features import get_price_features_row_nearest
+from app.fetch_prices import fetch_prices_by_axis
 from app.run_model import load_model, run_prediction
 
 # ===============================
@@ -129,6 +130,15 @@ def get_features_live(
     
     if task == "price":
         try:
+            # 1) Traer precios desde Binance
+            df_prices = fetch_prices_by_axis(use_now=True, interval=resolution)
+            # 2) Guardar a raw para que tu pipeline actual (price_features) lo use
+            raw_dir = PROJECT_ROOT / "data" / "raw"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = raw_dir / f"btcusd-{resolution}.csv"
+            # Ajusta sep si tu loader espera ';' o ',' (en tu fetch_prices usas ';' al exportar)
+            df_prices.to_csv(raw_path, index=False)
+            # 3) Construir features con tu función existente
             row = get_price_features_row_nearest(resolution=resolution, target_ts=target_ts)
             logging.info(f"Price features built for {target_ts} | res={resolution}")
             return row
@@ -190,6 +200,34 @@ def get_features_live(
     logging.error(f"Unsupported task: {task}")
     return pd.DataFrame()
 
+def get_features_live_price(target_ts, resolution):
+    """
+    Live price features using Binance OHLCV
+    """
+    from app.fetch_prices import fetch_prices_by_axis
+    from app.price_features import build_features
+
+    df = fetch_prices_by_axis(use_now=True, interval=resolution)
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df["time"] = pd.to_datetime(df["time"], utc=True)
+    df = df.set_index("time").sort_index()
+
+    for c in ["open", "high", "low", "close", "volume"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=["close"])
+
+    feat_df = build_features(df, resolution)
+    if feat_df.empty:
+        return pd.DataFrame()
+
+    # nearest row
+    idx = feat_df.index
+    pos = idx.get_indexer([target_ts], method="nearest")[0]
+    return feat_df.iloc[[pos]]
 
 # ===============================
 # MAIN DYNAMIC PREDICT FUNCTION
@@ -234,7 +272,12 @@ def run_dynamic_predict(
             mode_used = 'live'
             features_df = get_features_live(target_ts, resolution, task=task, window_hours=window_hours)
     elif mode_used == 'live':
-        features_df = get_features_live(target_ts, resolution, task=task, window_hours=window_hours)
+        if task == "sentiment":
+            features_df = get_features_live(target_ts, resolution, task=task, window_hours=window_hours)
+        elif task == "price":
+            features_df = get_features_live_price(target_ts, resolution)
+        else:
+            return {'msg': f"Unsupported task for live mode: {task}", 'prediction': None}
     else:
         return {'msg': "Invalid mode (auto, historical, live)", 'prediction': None}
     

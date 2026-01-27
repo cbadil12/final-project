@@ -37,7 +37,7 @@ def _get_prices_client():
 def fetch_prices_by_axis(
     start_date: str = None,
     end_date: str = None,
-    interval: str = "hourly",
+    interval: str = "1h",
     use_now: bool = False,
 )-> pd.DataFrame:
     # Interval map
