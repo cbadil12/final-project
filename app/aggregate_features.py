@@ -4,19 +4,14 @@
 # IMPORTS
 # ===============================
 import logging
-
 import pandas as pd
 import numpy as np
+import os
 
 # ===============================
 # CONFIGURATION
 # ===============================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Manual test paths
-INPUT_PATH = 'data/interim/news_with_sentiment.csv'
-FNG_PATH = 'data/raw/fear_greed.csv'
-OUTPUT_DIR = 'data/processed/'
 
 ROLLING_WINDOW = 7
 SHOCK_THRESHOLD = 2.0
@@ -170,7 +165,10 @@ def aggregate_features(
 # ENTRY POINT (for test/static)
 # ===============================
 if __name__ == "__main__":
-    import os
+    # Manual test paths
+    INPUT_PATH = 'data/interim/news_with_sentiment.csv'
+    FNG_PATH = 'data/raw/fear_greed.csv'
+    OUTPUT_DIR = 'data/processed/'
     
     # 1. Load data using the paths defined in CONFIGURATION
     if os.path.exists(INPUT_PATH):
