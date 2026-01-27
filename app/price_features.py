@@ -68,9 +68,6 @@ def load_raw(path: str) -> pd.DataFrame:
 
     df = pd.read_csv(path, sep=";")
 
-    # Normalize column names
-    df = df.rename(columns={"time": "datetime", "max": "high", "min": "low"})
-
     if "datetime" not in df.columns:
         raise ValueError(f"Missing datetime column. Got columns: {list(df.columns)}")
 

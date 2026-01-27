@@ -96,8 +96,8 @@ def fetch_prices_by_axis(
     df_price = pd.DataFrame(klines, columns=columns)
     df_price["open_time"] = pd.to_datetime(df_price["open_time"], unit="ms", utc=True)
     df_price["close_time"] = pd.to_datetime(df_price["close_time"], unit="ms", utc=True)
-    df_price = df_price.rename(columns={"open_time": "time"})
-    df_price = df_price[["time", "open", "high", "low", "close"]]
+    df_price = df_price.rename(columns={"open_time": "datetime"})
+    df_price = df_price[["datetime", "open", "high", "low", "close"]]
     return df_price
 
 # ===============================
@@ -105,7 +105,7 @@ def fetch_prices_by_axis(
 # ===============================
 if __name__ == "__main__":
     START_DATE = "2026-01-05"
-    END_DATE = "2026-01-10"
+    END_DATE = "2026-01-12"
     INTERVAL = "1h"  # "1h", "4h", or "24h"
     df_prices=(fetch_prices_by_axis(start_date=START_DATE, end_date=END_DATE, interval=INTERVAL))
     print(df_prices)

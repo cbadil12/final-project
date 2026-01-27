@@ -42,20 +42,20 @@ def load_prices(path_or_file) -> pd.DataFrame:
     df = pd.read_csv(path_or_file)
 
     # Normalización del nombre de timestamp
-    if 'timestamp' not in df.columns and 'date' in df.columns:
-        df = df.rename(columns={'date': 'timestamp'})
+    if 'datetime' not in df.columns and 'date' in df.columns:
+        df = df.rename(columns={'date': 'datetime'})
 
-    if 'timestamp' not in df.columns:
-        raise ValueError("El CSV de precios debe incluir 'timestamp' o 'date'.")
+    if 'datetime' not in df.columns:
+        raise ValueError("El CSV de precios debe incluir 'datetime'.")
 
-    df['timestamp'] = _to_utc_datetime(df['timestamp'])
+    df['datetime'] = _to_utc_datetime(df['datetime'])
 
     # Normalización de columnas numéricas
     for c in ['open', 'high', 'low', 'close', 'price']:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce')
 
-    df = df.dropna(subset=['timestamp']).sort_values('timestamp')
+    df = df.dropna(subset=['datetime']).sort_values('datetime')
     return df
 
 
@@ -78,21 +78,28 @@ def build_ohlc(prices_df: pd.DataFrame, interval: str = '1h', min_points_per_can
         "d": "1D",
     }
     freq = _freq_map.get(str(interval).lower(), interval)
-
     # Caso 1: OHLC ya disponible
     if all(c in df.columns for c in ['open', 'high', 'low', 'close']):
-        ohlc = df[['timestamp', 'open', 'high', 'low', 'close']].dropna(subset=['close']).copy()
+        if "datetime" in df.columns:
+            df["datetime"] = _to_utc_datetime(df["datetime"])
+            ohlc = df[['datetime', 'open', 'high', 'low', 'close']].dropna(subset=['close']).copy()
+        else:
+            ohlc = df[['open', 'high', 'low', 'close']].dropna(subset=['close']).copy()
         return PriceData(raw=df, ohlc=ohlc, mode='ohlc')
 
     # Caso 2: solo serie de precios
     if 'price' not in df.columns:
         return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
 
-    s = df[['timestamp', 'price']].dropna(subset=['price']).copy()
+    if "datetime" not in df.columns:
+        return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
+
+    df["datetime"] = _to_utc_datetime(df["datetime"])
+    s = df[['datetime', 'price']].dropna(subset=['price']).copy()
     if s.empty:
         return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
 
-    s = s.set_index("timestamp").sort_index()
+    s = s.set_index("datetime").sort_index()
     # Asegurar datetime index UTC
     s.index = pd.to_datetime(s.index, utc=True, errors="coerce")
     s = s.dropna(subset=["price"])
@@ -205,17 +212,17 @@ def load_prediction_csv(path: str, pred_col_name: str) -> pd.DataFrame:
     df = pd.read_csv(p)
 
     # Normalize timestamp column name
-    if "timestamp" not in df.columns:
-        for alt in ["date", "datetime", "time"]:
+    if "datetime" not in df.columns:
+        for alt in ["date", "timestamp", "time"]:
             if alt in df.columns:
-                df = df.rename(columns={alt: "timestamp"})
+                df = df.rename(columns={alt: "datetime"})
                 break
 
-    if "timestamp" not in df.columns:
+    if "datetime" not in df.columns:
         return pd.DataFrame()
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-    df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
+    df = df.dropna(subset=["datetime"]).sort_values("datetime")
 
     # Normalize common prediction column names
     rename_map = {
@@ -235,7 +242,7 @@ def load_prediction_csv(path: str, pred_col_name: str) -> pd.DataFrame:
     if pred_col_name not in df.columns:
         return pd.DataFrame()
 
-    keep_cols = ["timestamp", pred_col_name]
+    keep_cols = ["datetime", pred_col_name]
     if "y_true" in df.columns:
         keep_cols.append("y_true")
 
