@@ -25,12 +25,23 @@ PROCESSED_DIR = ROOT_PATH / "data" / "processed"
 # --- Import dinámico ---
 DYN_IMPORT_ERROR = None
 run_dynamic_predict = None
+run_fused_predict = None
 
 try:
     from src.backend.dynamic_predict import run_dynamic_predict
 except Exception as e:
     run_dynamic_predict = None
-    DYN_IMPORT_ERROR = repr(e)
+    DYN_IMPORT_ERROR = f"import run_dynamic_predict failed: {repr(e)}"
+
+# Import opcional: si no existe, NO rompe el resto
+try:
+    from src.backend.dynamic_predict import run_fused_predict
+except Exception as e:
+    run_fused_predict = None
+    if DYN_IMPORT_ERROR:
+        DYN_IMPORT_ERROR += f" | import run_fused_predict failed: {repr(e)}"
+    else:
+        DYN_IMPORT_ERROR = f"import run_fused_predict failed: {repr(e)}"
 
 # Helpers de frontend
 from src.frontend.data_loader import (
@@ -59,6 +70,38 @@ PRED_XGB_4H_PATH = PROCESSED_DIR / "predictions_xgb_clf_4h.csv"
 # (opcional) dataset “solo sentimiento”
 SENTIMENT_ONLY_1H_PATH = PROCESSED_DIR / "sentiment_only_1h.csv"
 
+def pred_path(model_name: str, resolution: str) -> Path:
+    """
+    Devuelve el path del CSV de predicciones precomputadas si existe.
+    Formato esperado: data/processed/predictions_{model_name}_{resolution}.csv
+    """
+    p = PROCESSED_DIR / f"predictions_{model_name}_{resolution}.csv"
+    return p
+
+def load_pred_if_exists(model_name: str, resolution: str, y_col: str = "y_pred") -> pd.DataFrame:
+    p = pred_path(model_name, resolution)
+    if not p.exists():
+        return pd.DataFrame()
+
+    df = load_prediction_csv(str(p), y_col)
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # Normaliza timestamp como columna
+    if "timestamp" not in df.columns:
+        # Caso: timestamp viene como índice
+        if isinstance(df.index, pd.DatetimeIndex):
+            df = df.reset_index().rename(columns={"index": "timestamp"})
+        # Caso alternativo: columna datetime
+        elif "datetime" in df.columns:
+            df = df.rename(columns={"datetime": "timestamp"})
+
+    # Fuerza tipo datetime UTC si existe
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+
+    return df
 
 # ------------------ Funciones de utilidad ------------------
 def _asset_to_data_uri(path: Path) -> str | None:
@@ -114,6 +157,58 @@ def _run_dynamic_predict_cached(
         window_hours=window_hours,
         model_name=model_name
     )
+
+@st.cache_data(show_spinner=False)
+def _run_fused_predict_cached(
+    target_ts_sent_str: str,
+    target_ts_price_str: str,
+    resolution: str,
+    mode: str = "auto",
+    window_hours: int = 24,
+    sentiment_model_name: str | None = None,
+    price_model_name: str | None = None,
+):
+    
+    # Sentiment NO soporta 24h en tus modelos; degradamos a 4h automáticamente
+    sentiment_resolution = resolution if resolution in ("1h", "4h") else "4h"
+    price_resolution = resolution
+
+    # Si no tenemos NI dynamic, no hay nada que hacer
+    if run_dynamic_predict is None and run_fused_predict is None:
+        return {"msg": "dynamic_predict no disponible", "sentiment": None, "price": None}
+
+    # Preferir fused si existe
+    if run_fused_predict is not None and resolution != "24h":
+        return run_fused_predict(
+            target_ts_sent=target_ts_sent_str,
+            target_ts_price=target_ts_price_str,
+            resolution=resolution,
+            mode=mode,
+            window_hours=window_hours,
+            sentiment_model_name=sentiment_model_name,
+            price_model_name=price_model_name,
+        )
+
+    # ✅ Fallback: si fused no existe, hacer 2 llamadas como antes (pero dentro de UNA función cacheada)
+    sent = run_dynamic_predict(
+        target_ts=target_ts_sent_str,
+        resolution=sentiment_resolution,
+        task="sentiment",
+        mode=mode,
+        window_hours=window_hours,
+        model_name=sentiment_model_name,  # None => default en run_model
+    )
+
+    price = run_dynamic_predict(
+        target_ts=target_ts_price_str,
+        resolution=price_resolution,
+        task="price",
+        mode=mode,
+        window_hours=window_hours,
+        model_name=price_model_name,      # None => default en run_model
+    )
+
+    return {"msg": "fallback(dynamic x2)", "sentiment": sent, "price": price}
 
 # ------------------ Config Streamlit ------------------
 st.set_page_config(page_title='BTC Predictor', page_icon='📈', layout='wide')
@@ -215,13 +310,16 @@ def bounds_for_regime(name: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
             return r_start, r_end
     return None
 
+
 def round_down_to_interval(ts: pd.Timestamp, interval: str) -> pd.Timestamp:
-    """Alinea target_ts al borde inferior del intervalo (1h, 4h)."""
     if interval == "1h":
         return ts.replace(minute=0, second=0, microsecond=0)
     if interval == "4h":
         hr = (ts.hour // 4) * 4
         return ts.replace(hour=hr, minute=0, second=0, microsecond=0)
+    if interval == "24h":
+        # borde inferior del día UTC
+        return ts.replace(hour=0, minute=0, second=0, microsecond=0)
     return ts
 
 
@@ -514,7 +612,7 @@ def render_app():
     )
 
     # Granularidad
-    interval_options = ["1h", "4h"]
+    interval_options = ["1h", "4h", "24h"]
     interval = st.sidebar.selectbox(
         "Granularidad (gráfico)",
         interval_options,
@@ -524,7 +622,7 @@ def render_app():
         help="Frecuencia del precio para el gráfico (OHLC/linea)."
     )
 
-    INTERVAL_TO_HOURS = {"1h": 1, "4h": 4}
+    INTERVAL_TO_HOURS = {"1h": 1, "4h": 4, "24h": 24}
     horizon_hours = INTERVAL_TO_HOURS.get(interval, 1)
     st.sidebar.caption(f"Predicción sentimiento: **t+1** (siguiente {interval} → +{horizon_hours}h)")
 
@@ -755,7 +853,11 @@ def render_app():
             last_series = price_window.dropna(subset=["price"])
             last_price = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
             last_seen_ts = last_series["timestamp"].max() if not last_series.empty else None
-            target_ts_g = (last_seen_ts + pd.Timedelta(hours=horizon_hours)) if last_seen_ts is not None else None
+            
+            target_ts_g = None
+            if last_seen_ts is not None:
+                target_ts_g = last_seen_ts + pd.Timedelta(hours=horizon_hours)
+
 
             # Cargar predicciones
             if interval == "1h":
@@ -792,44 +894,27 @@ def render_app():
             dyn_conf = None
 
             if run_pred and target_ts_g is not None:
-                with st.spinner("Ejecutando predicción dinámica (Sentimiento)…"):
-                    dynamic_result = _run_dynamic_predict_cached(
-                        target_ts_str=str(target_ts_g),
-                        resolution=interval,          # 1h/4h (del gráfico)
-                        task="sentiment",
-                        mode="auto",                  # live si está fuera del histórico
-                        window_hours=24,
-                        model_name="xgb_clf"
-                    )
-
-                st.session_state["__dyn_global_result__"] = dynamic_result
-
-                if isinstance(dynamic_result, dict) and dynamic_result.get("msg"):
-                    st.info(f"DynamicPredict (sentiment): {dynamic_result['msg']}")
-
-                if isinstance(dynamic_result, dict):
-                    dyn_pred_class = dynamic_result.get("prediction", None)
-                    dyn_conf = dynamic_result.get("confidence", None)
-
-                # ---- Predicción dinámica de PRECIO (dirección) ----
                 target_ts_price = last_seen_ts + pd.Timedelta(hours=price_horizon_hours)
 
-                with st.spinner(f"Ejecutando predicción dinámica (Precio {price_horizon})…"):
-                    price_result = _run_dynamic_predict_cached(
-                        target_ts_str=str(target_ts_price),
-                        resolution=price_horizon,     # 1h/4h/24h (horizonte de precio)
-                        task="price",
-                        mode="historical",            # por ahora, hasta integrar fetch de precios live
+                with st.spinner("Ejecutando predicción dinámica (Fusion: sentimiento + precio)…"):
+                    fused = _run_fused_predict_cached(
+                        target_ts_sent_str=str(target_ts_g),
+                        target_ts_price_str=str(target_ts_price),
+                        resolution=interval,      # 1h/4h/24h (lo que elijas en granularidad)
+                        mode="auto",
                         window_hours=24,
-                        model_name="xgb_price"
+                        sentiment_model_name="xgb_clf",   # deja que el backend elija defaults
+                        price_model_name="xgb_price",
                     )
 
-                st.session_state["__dyn_global_price_result__"] = price_result
+                # Guardar en session_state como antes
+                st.session_state["__dyn_global_result__"] = fused.get("sentiment")
+                st.session_state["__dyn_global_price_result__"] = fused.get("price")
 
-                if isinstance(price_result, dict) and price_result.get("msg"):
-                    st.info(f"DynamicPredict (price): {price_result['msg']}")
-
-
+                # Debug
+                if debug_mode:
+                    with st.expander("Fusion result (debug)", expanded=False):
+                        st.write(fused)
             
             # ====================== BLOQUE FINAL GLOBAL (ORDEN: Sentimiento -> Precio -> Señal final) ======================
 
@@ -894,30 +979,27 @@ def render_app():
             price_result_reg = st.session_state.get("__dyn_reg_price_result__")
 
             if run_pred and target_ts is not None:
-                # 1) SENTIMIENTO (clasificación)
-                with st.spinner("Ejecutando predicción dinámica (Sentimiento) - Regímenes…"):
-                    dyn_result = _run_dynamic_predict_cached(
-                        target_ts_str=str(target_ts),
-                        resolution=interval,
-                        task="sentiment",
-                        mode="auto",          # live solo si está fuera del histórico (según tu backend)
-                        window_hours=24,
-                        model_name="xgb_clf"
-                    )
-                st.session_state["__dyn_reg_result__"] = dyn_result
-
-                # 2) PRECIO (dirección)
                 target_ts_price = target_ts + pd.Timedelta(hours=price_horizon_hours)
-                with st.spinner(f"Ejecutando predicción dinámica (Precio {price_horizon}) - Regímenes…"):
-                    price_result_reg = _run_dynamic_predict_cached(
-                        target_ts_str=str(target_ts_price),
-                        resolution=price_horizon,     # en tu caso = interval
-                        task="price",
-                        mode="historical",            # por ahora (hasta integrar live de precios)
+
+                with st.spinner("Ejecutando predicción dinámica (Fusion: sentimiento + precio)…"):
+                    fused = _run_fused_predict_cached(
+                        target_ts_sent_str=str(target_ts),
+                        target_ts_price_str=str(target_ts_price),
+                        resolution=interval,      # 1h/4h/24h (lo que elijas en granularidad)
+                        mode="auto",
                         window_hours=24,
-                        model_name="xgb_price"
+                        sentiment_model_name="xgb_clf",   # deja que el backend elija defaults
+                        price_model_name="xgb_price",
                     )
-                st.session_state["__dyn_reg_price_result__"] = price_result_reg
+
+                # Guardar en session_state como antes
+                st.session_state["__dyn_reg_result__"] = fused.get("sentiment")
+                st.session_state["__dyn_reg_price_result__"] = fused.get("price")
+
+                # Feedback opcional
+                if debug_mode:
+                    with st.expander("Fusion result (debug)", expanded=False):
+                        st.write(fused)
 
             # ====================== BLOQUE FINAL REGÍMENES (ORDEN: Sentimiento -> Precio -> Señal final) ======================
 
@@ -997,48 +1079,104 @@ def render_app():
     # --------- Tab Señal & Predicción ---------
     with tab_signal:
         st.subheader("Predicción")
-        st.caption("Sentimiento: RF/XGB (clasificación). Time Series (ARIMA/SARIMA)")
+        st.caption("Sentimiento y Precio: RF/XGB (clasificación)")
 
         # Carga flexible según granularidad
-        if interval == "1h":
-            rf_path  = PRED_RF_1H_PATH
-            xgb_path = PRED_XGB_1H_PATH
-        else:
-            rf_path  = PRED_RF_4H_PATH
-            xgb_path = PRED_XGB_4H_PATH
+        # --- Sentiment (precomputado) ---
+        rf_df  = load_pred_if_exists("rf_clf", interval, "y_pred")
+        xgb_df = load_pred_if_exists("xgb_clf", interval, "y_pred")
 
-        rf_df  = load_prediction_csv(str(rf_path),  "y_pred")
-        xgb_df = load_prediction_csv(str(xgb_path), "y_pred")
-
-        # Renombrar para compatibilidad con UI
         if not rf_df.empty:
             rf_df = rf_df.rename(columns={"y_pred": "y_pred_rf"})
         if not xgb_df.empty:
             xgb_df = xgb_df.rename(columns={"y_pred": "y_pred_xgb"})
+
+        # --- Price (precomputado) ---
+        rfp_df  = load_pred_if_exists("rf_price", interval, "y_pred")
+        xgbp_df = load_pred_if_exists("xgb_price", interval, "y_pred")
+
+        if not rfp_df.empty:
+            rfp_df = rfp_df.rename(columns={"y_pred": "y_pred_rf_price"})
+        if not xgbp_df.empty:
+            xgbp_df = xgbp_df.rename(columns={"y_pred": "y_pred_xgb_price"})
+        
+    
+        # --- Merge sentiment ---
+        pred_sent_df = pd.DataFrame()
+        if not rf_df.empty and not xgb_df.empty:
+            pred_sent_df = pd.merge(rf_df, xgb_df, on="timestamp", how="outer")
+        else:
+            pred_sent_df = rf_df if not rf_df.empty else xgb_df
+        if not pred_sent_df.empty:
+            pred_sent_df = pred_sent_df.sort_values("timestamp")
+
+        # --- Merge price ---
+        pred_price_df = pd.DataFrame()
+        if not rfp_df.empty and not xgbp_df.empty:
+            pred_price_df = pd.merge(rfp_df, xgbp_df, on="timestamp", how="outer")
+        else:
+            pred_price_df = rfp_df if not rfp_df.empty else xgbp_df
+        if not pred_price_df.empty:
+            pred_price_df = pred_price_df.sort_values("timestamp")
+    
 
 
         if mode == "Regímenes (Halvings)":
             target_ts = st.session_state.get("__regime_target_ts__")
             regime    = st.session_state.get("__regime_name__")
 
-            st.caption("Régimen: {regime}. Predicción dinámica disponible al pulsar 🚀 Ejecutar Predicción.")
+            st.caption(f"Régimen: {regime}. Predicción dinámica disponible al pulsar 🚀 Ejecutar Predicción.")
+
+            # Mostrar resultados dinámicos guardados (si existen)
+            dyn_sent = st.session_state.get("__dyn_reg_result__")
+            dyn_price = st.session_state.get("__dyn_reg_price_result__")
 
             # 1) Mostrar resultado dinámico si existe (guardado por el panel Regímenes)
-            dyn_result = st.session_state.get("__dyn_reg_result__")
-            if isinstance(dyn_result, dict) and dyn_result.get("prediction") is not None:
-                st.markdown("### 🔥 Predicción dinámica")
-                st.write({
-                    "prediction": dyn_result.get("prediction"),     # 0/1
-                    "confidence": dyn_result.get("confidence"),
-                    "proba_up": dyn_result.get("proba_up"),
-                    "mode_used": dyn_result.get("mode_used"),
-                    "model": dyn_result.get("model"),
-                    "timestamp": dyn_result.get("timestamp"),
-                    "resolution": dyn_result.get("resolution"),
-                    "msg": dyn_result.get("msg"),
-                })
-            else:
-                st.info("Aún no hay predicción dinámica guardada. Pulsa el botón 🚀 en el sidebar para generarla.")
+
+            def _pretty_dyn(d: dict, label: str):
+                """Devuelve un dict corto y 'lindo' para mostrar."""
+                if not isinstance(d, dict):
+                    return None
+                pred = d.get("prediction", None)
+                pred_lbl = None
+                if pred in (0, 1):
+                    pred_lbl = "SUBIDA" if int(pred) == 1 else "BAJADA"
+
+                return {
+                    "tipo": label,
+                    "prediction": pred_lbl,
+                    "confidence": d.get("confidence", None),
+                    "proba_up": d.get("proba_up", None),
+                    "mode_used": d.get("mode_used", None),
+                    "model": d.get("model", None),
+                    "resolution": d.get("resolution", None),
+                    "timestamp": d.get("timestamp", None),
+                    "msg": d.get("msg", None),
+                }
+
+            st.markdown("### 🔥 Predicción dinámica")
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+                st.write("**Sentimiento**")
+                if isinstance(dyn_sent, dict) and dyn_sent.get("prediction") is not None:
+                    st.write(_pretty_dyn(dyn_sent, "sentiment"))
+                else:
+                    st.info("Aún no hay predicción dinámica de sentimiento. Pulsa 🚀 en el sidebar para generarla.")
+
+            with c2:
+                st.write("**Precio**")
+                if isinstance(dyn_price, dict) and dyn_price.get("prediction") is not None:
+                    st.write(_pretty_dyn(dyn_price, "price"))
+                else:
+                    st.info("Aún no hay predicción dinámica de precio. Pulsa 🚀 en el sidebar para generarla.")
+
+            # Debug detallado opcional
+            if debug_mode:
+                with st.expander("Detalles completos (debug)", expanded=False):
+                    st.write({"dyn_sent_raw": dyn_sent, "dyn_price_raw": dyn_price})
+
 
             # 2) Mostrar predicciones históricas precomputadas alrededor del target
             if target_ts is None:
@@ -1068,15 +1206,38 @@ def render_app():
             # ---------- Global ----------
             if rf_df.empty and xgb_df.empty:
                 st.info("Aún no hay CSVs de predicción de sentimiento en data/processed/.")
-            else:
-                # Merge
-                if not rf_df.empty and not xgb_df.empty:
-                    pred_df = pd.merge(rf_df, xgb_df, on="timestamp", how="outer")
-                else:
-                    pred_df = rf_df if not rf_df.empty else xgb_df
+            if rfp_df.empty and xgbp_df.empty:
+                st.info(f"No hay CSVs de predicción de PRECIO para {interval} en data/processed/.")
 
-                pred_df = pred_df.sort_values("timestamp")
-                pred_window = pred_df[(pred_df["timestamp"] >= start_ts) & (pred_df["timestamp"] <= end_ts)].copy()
+            else:
+                # Merge sentiment
+                pred_sent_df = pd.DataFrame()
+                if not rf_df.empty and not xgb_df.empty:
+                    pred_sent_df = pd.merge(rf_df, xgb_df, on="timestamp", how="outer")
+                else:
+                    pred_sent_df = rf_df if not rf_df.empty else xgb_df
+
+                if not pred_sent_df.empty:
+                    pred_sent_df = pred_sent_df.sort_values("timestamp")
+
+                # Merge price
+                pred_price_df = pd.DataFrame()
+                if not rfp_df.empty and not xgbp_df.empty:
+                    pred_price_df = pd.merge(rfp_df, xgbp_df, on="timestamp", how="outer")
+                else:
+                    pred_price_df = rfp_df if not rfp_df.empty else xgbp_df
+
+                if not pred_price_df.empty:
+                    pred_price_df = pred_price_df.sort_values("timestamp")
+
+                
+                # Ventana sentimiento (solo si existe timestamp)
+                if (pred_sent_df is None) or pred_sent_df.empty or ("timestamp" not in pred_sent_df.columns):
+                    pred_window = pd.DataFrame()
+                else:
+                    pred_window = pred_sent_df[
+                        (pred_sent_df["timestamp"] >= start_ts) & (pred_sent_df["timestamp"] <= end_ts)
+                    ].copy()
 
                 if pred_window.empty:
                     st.warning("Hay predicciones, pero no hay registros dentro del rango de fechas seleccionado.")
@@ -1091,7 +1252,7 @@ def render_app():
                         target_ts_g  = last_seen_ts + pd.Timedelta(hours=horizon_hours)
                         st.caption(f"Base (último dato): {last_seen_ts:%Y-%m-%d %H:%M} UTC → Objetivo: {target_ts_g:%Y-%m-%d %H:%M} UTC")
 
-                        row_next = pred_df[pred_df["timestamp"] == target_ts_g]
+                        row_next = pred_window[pred_window["timestamp"] == target_ts_g]
                         if row_next.empty:
                             st.info(f"Aún no existe una fila de predicción exactamente para el siguiente {interval} (t+1).")
                         else:

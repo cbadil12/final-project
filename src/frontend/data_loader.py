@@ -69,6 +69,15 @@ def build_ohlc(prices_df: pd.DataFrame, interval: str = '1h', min_points_per_can
     3) Si no se cumplen las condiciones → se devuelve modo 'line'.
     """
     df = prices_df.copy()
+    # Normalizar interval a frecuencia pandas
+    _freq_map = {
+        "1h": "1H",
+        "4h": "4H",
+        "24h": "24H",
+        "1d": "1D",
+        "d": "1D",
+    }
+    freq = _freq_map.get(str(interval).lower(), interval)
 
     # Caso 1: OHLC ya disponible
     if all(c in df.columns for c in ['open', 'high', 'low', 'close']):
@@ -83,18 +92,24 @@ def build_ohlc(prices_df: pd.DataFrame, interval: str = '1h', min_points_per_can
     if s.empty:
         return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
 
-    s = s.set_index('timestamp')
+    s = s.set_index("timestamp").sort_index()
+    # Asegurar datetime index UTC
+    s.index = pd.to_datetime(s.index, utc=True, errors="coerce")
+    s = s.dropna(subset=["price"])
 
     # Verificar densidad mínima por intervalo
-    counts = s['price'].resample(interval).count()
-    if counts.max() < min_points_per_candle:
+    counts = s['price'].resample(freq).count()
+
+    # Requiere que al menos el 60% de las velas tengan el mínimo de puntos
+    valid_ratio = float((counts >= min_points_per_candle).mean()) if len(counts) else 0.0
+    if valid_ratio < 0.60:
         return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
 
     # Resampling OHLC
-    o = s['price'].resample(interval).first()
-    h = s['price'].resample(interval).max()
-    l = s['price'].resample(interval).min()
-    c = s['price'].resample(interval).last()
+    o = s['price'].resample(freq).first()
+    h = s['price'].resample(freq).max()
+    l = s['price'].resample(freq).min()
+    c = s['price'].resample(freq).last()
 
     ohlc = pd.DataFrame({'open': o, 'high': h, 'low': l, 'close': c}).dropna(subset=['close']).reset_index()
     return PriceData(raw=df, ohlc=ohlc, mode='computed_ohlc')
