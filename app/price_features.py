@@ -19,9 +19,9 @@ import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-RAW_1H = "data/raw/raw_price_dowloaded_1h_START_10-01-2015_END_18-01-2026.csv"
-RAW_4H = "data/raw/raw_price_dowloaded_4h_START_31-12-2011_END_20-12-2025.csv"
-RAW_24H = "data/raw/raw_price_dowloaded_24h_START_10-01-2015_END_18-01-2026.csv"
+RAW_1H = "data/raw/btcusd-1h.csv"
+RAW_4H = "data/raw/btcusd-4h.csv"
+RAW_24H = "data/raw/btcusd-24h.csv"
 
 OUT_1H = "data/interim/price_features_1h.csv"
 OUT_4H = "data/interim/price_features_4h.csv"
