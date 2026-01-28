@@ -30,7 +30,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from app.styles import set_styles, ICONS
-from app.text_content import TEXT_TITLE, TEXT_DISCLAIMER, TEXT_SUGGESTIONS, TEXT_CONTEXT, TEXT_EDA_1, TEXT_EDA_2
+from app.text_content import TEXT_TITLE, TEXT_DISCLAIMER, TEXT_SUGGESTIONS, TEXT_CONTEXT, TEXT_EDA_1, TEXT_EDA_2, TEXT_EDA_SENTIMENT
 # 4. Dynamic imports
 DYN_IMPORT_ERROR = None
 run_dynamic_predict = None
@@ -533,7 +533,7 @@ def render_home():
         render_disclaimer()
 
 def render_overview():
-    tab_context, tab_eda_1, tab_eda_2, tab_future = st.tabs(["Contexto", "Time-series EDA (Global vs Regímenes)", "Time-series EDA (Resampling)", "Futuras implementaciones"])
+    tab_context, tab_eda_1, tab_eda_2, tab_eda_sentiment,tab_future = st.tabs(["Contexto", "Time-series EDA (Global vs Regímenes)", "Time-series EDA (Resampling)", "EDA sentimientos","Futuras implementaciones"])
     with tab_context:
         st.markdown(TEXT_CONTEXT)
         st.image("assets/pipeline.png", caption="Pipeline", use_container_width=True)
@@ -541,6 +541,8 @@ def render_overview():
         st.markdown(TEXT_EDA_1)
     with tab_eda_2:
         st.markdown(TEXT_EDA_2)
+    with tab_eda_sentiment:
+        st.markdown(TEXT_EDA_SENTIMENT)
     with tab_future:
         st.markdown(TEXT_SUGGESTIONS)
     st.markdown("</div></div>", unsafe_allow_html=True)

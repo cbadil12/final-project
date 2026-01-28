@@ -287,7 +287,7 @@ En la seccion **INPUTS** del notebook:
 TEXT_EDA_SENTIMENT='''# EDA Sentimientos
 
 ## Link al EDA
-[EDA Sentimientos](https://github.com/cbadil12/final-project/blob/main/notebooks/eda_timeseries_method_2.ipynb)
+[EDA Sentimientos](https://github.com/cbadil12/final-project/blob/main/notebooks/eda_sentiments.ipynb)
 
 Este EDA analiza el componente de **sentimiento** dentro del sistema de predicción de BTC.  
 El objetivo **no** es entrenar modelos en este notebook, sino **validar el dataset**, justificar decisiones de preprocesamiento y evaluar si el sentimiento aporta señal sobre el retorno futuro.
