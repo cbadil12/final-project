@@ -52,6 +52,7 @@ TEXT_SUGGESTIONS="""
     En conjunto, estas recomendaciones **no cambian la lógica del predictor actual**, 
     sino que lo fortalecen y lo preparan para escenarios más dinámicos y escalables.
     """
+
 TEXT_CONTEXT = """
 ## BTC Predictor
 

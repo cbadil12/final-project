@@ -536,6 +536,7 @@ def render_overview():
     tab_context, tab_eda_1, tab_eda_2, tab_future = st.tabs(["Contexto", "Time-series EDA (Global vs Regímenes)", "Time-series EDA (Resampling)", "Futuras implementaciones"])
     with tab_context:
         st.markdown(TEXT_CONTEXT)
+        st.image("assets/pipeline.png", caption="Pipeline", use_container_width=True)
     with tab_eda_1:
         st.markdown(TEXT_EDA_1)
     with tab_eda_2:
