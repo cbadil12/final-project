@@ -29,7 +29,7 @@ def _find_project_root() -> Path:
             return base
     # fallback seguro
     return here.parents[2]
-PROJECT_ROOT = Path(__file__).resolve()parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 FNG_PATH = PROJECT_ROOT / "data" / "raw" / "fear_greed.csv"
 
