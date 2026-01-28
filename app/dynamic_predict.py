@@ -258,9 +258,28 @@ def run_dynamic_predict(
     
     # Determine mode
     mode_used = mode
+    
+    #✅ Delta permitido según resolución (un paso hacia adelante)
+    DELTA_BY_RES = {
+        "1h": pd.Timedelta(hours=1),
+        "4h": pd.Timedelta(hours=4),
+        "24h": pd.Timedelta(hours=24),
+    }
+
     if mode == 'auto':
-        if not df_hist.empty and df_hist.index.min() <= target_ts <= df_hist.index.max():
-            mode_used = 'historical'
+        
+        if df_hist is not None and not df_hist.empty:
+            hist_min = df_hist.index.min()
+            hist_max = df_hist.index.max()
+            delta = DELTA_BY_RES.get(resolution, pd.Timedelta(hours=1))
+            
+        # ✅ Permitimos histórico si el target cae dentro del dataset
+        # o como mucho a +1 intervalo del último timestamp histórico
+
+            if hist_min <= target_ts <= (hist_max + delta):
+                mode_used = 'historical'
+            else:
+                mode_used = 'live'
         else:
             mode_used = 'live'
     

@@ -763,7 +763,7 @@ def render_dashboard():
     dyn_pred_class = None
     dyn_conf = None
     if run_pred and target_ts_g is not None:
-        target_ts_price = last_seen_ts + pd.Timedelta(hours=price_horizon_hours)
+        target_ts_price = last_seen_ts  # features del último punto observado
         with st.spinner("Ejecutando predicción dinámica (Fusion: sentimiento + precio)…"):
             fused = _run_fused_predict_cached(
                 target_ts_sent_str=str(target_ts_g),
