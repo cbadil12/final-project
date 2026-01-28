@@ -29,7 +29,7 @@ def _find_project_root() -> Path:
             return base
     # fallback seguro
     return here.parents[2]
-PROJECT_ROOT = _find_project_root()
+PROJECT_ROOT = Path(__file__).resolve()parents[1]
 DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 FNG_PATH = PROJECT_ROOT / "data" / "raw" / "fear_greed.csv"
 
@@ -57,8 +57,7 @@ def load_dataset(resolution: str, task: str = "sentiment") -> pd.DataFrame:
     """
 
     # Ruta robusta (independiente del cwd)
-    project_root = Path(__file__).resolve().parents[2]
-    data_processed_dir = project_root / "data" / "processed"
+    data_processed_dir = DATA_PROCESSED_DIR
 
     # ✅ Elegir dataset según task
     if task == "sentiment":
