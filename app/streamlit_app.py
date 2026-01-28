@@ -618,7 +618,8 @@ def render_dashboard():
         if relevance:
             if not news_window.empty:
                 txt = (news_window.get('title', '').fillna('') + ' ' + news_window.get('description', '').fillna('')).str.lower()
-                mask = txt.str.contains(r'(bitcoin|btc)', regex=True)
+                # Non-capturing group avoids pandas warning about match groups.
+                mask = txt.str.contains(r'(?:bitcoin|btc)', regex=True)
                 news_window =  news_window[mask].copy()
     else:
         news_window = pd.DataFrame()
@@ -763,7 +764,7 @@ def render_dashboard():
     dyn_pred_class = None
     dyn_conf = None
     if run_pred and target_ts_g is not None:
-        target_ts_price = last_seen_ts  # features del último punto observado
+        target_ts_price = last_seen_ts + pd.Timedelta(hours=price_horizon_hours)
         with st.spinner("Ejecutando predicción dinámica (Fusion: sentimiento + precio)…"):
             fused = _run_fused_predict_cached(
                 target_ts_sent_str=str(target_ts_g),
@@ -839,27 +840,20 @@ def render_dashboard():
             st.info("No hay noticias para mostrar en el rango.")
     # --------- Tab Señal & Predicción ---------
     with tab_prediction:
-        st.caption("Sentimiento (Random Forest Clasificador)  +  Precio (XGBoost Clasificador)")
-        # Carga flexible según granularidad
-        # --- Sentiment (precomputado) ---
+        st.markdown("Sentimiento:")
+        st.caption("- Modelos de clasificación supervisada (Random Forest y XGBoost) entrenados sobre features de sentimiento de noticias + Fear & Greed, sin usar precios.")
+        st.caption("- Predicen la dirección del movimiento (sube/baja) en t+1.")
+        st.markdown("Precio:")
+        st.caption("- Modelos de clasificación supervisada (Random Forest y XGBoost) entrenados sobre features técnicas derivadas solo de precios históricos (retornos, lags, volatilidad, momentum).")
+        st.caption("- Predicen la dirección del movimiento (sube/baja) en t+1.")
+
+        # --- Sentiment (precomputaded) ---
         rf_df  = load_pred_if_exists("rf_clf", interval, "y_pred")
         xgb_df = load_pred_if_exists("xgb_clf", interval, "y_pred")
-
         if not rf_df.empty:
             rf_df = rf_df.rename(columns={"y_pred": "y_pred_rf"})
         if not xgb_df.empty:
             xgb_df = xgb_df.rename(columns={"y_pred": "y_pred_xgb"})
-
-        # --- Price (precomputado) ---
-        rfp_df  = load_pred_if_exists("rf_price", interval, "y_pred")
-        xgbp_df = load_pred_if_exists("xgb_price", interval, "y_pred")
-
-        if not rfp_df.empty:
-            rfp_df = rfp_df.rename(columns={"y_pred": "y_pred_rf_price"})
-        if not xgbp_df.empty:
-            xgbp_df = xgbp_df.rename(columns={"y_pred": "y_pred_xgb_price"})
-        
-    
         # --- Merge sentiment ---
         pred_sent_df = pd.DataFrame()
         if not rf_df.empty and not xgb_df.empty:
@@ -869,6 +863,14 @@ def render_dashboard():
         if not pred_sent_df.empty:
             pred_sent_df = pred_sent_df.sort_values("datetime")
 
+        # --- Price (precomputaded) ---
+        rfp_df  = load_pred_if_exists("rf_price", interval, "y_pred")
+        xgbp_df = load_pred_if_exists("xgb_price", interval, "y_pred")
+
+        if not rfp_df.empty:
+            rfp_df = rfp_df.rename(columns={"y_pred": "y_pred_rf_price"})
+        if not xgbp_df.empty:
+            xgbp_df = xgbp_df.rename(columns={"y_pred": "y_pred_xgb_price"})
         # --- Merge price ---
         pred_price_df = pd.DataFrame()
         if not rfp_df.empty and not xgbp_df.empty:
@@ -882,7 +884,6 @@ def render_dashboard():
             st.info("Aún no hay CSVs de predicción de sentimiento en data/processed/.")
         if rfp_df.empty and xgbp_df.empty:
             st.info(f"No hay CSVs de predicción de PRECIO para {interval} en data/processed/.")
-
         else:
             # Merge sentiment
             pred_sent_df = pd.DataFrame()
@@ -893,7 +894,6 @@ def render_dashboard():
 
             if not pred_sent_df.empty:
                 pred_sent_df = pred_sent_df.sort_values("datetime")
-
             # Merge price
             pred_price_df = pd.DataFrame()
             if not rfp_df.empty and not xgbp_df.empty:
@@ -906,15 +906,13 @@ def render_dashboard():
 
             # Ventana sentimiento (solo si existe datetime)
             if (pred_sent_df is None) or pred_sent_df.empty or ("datetime" not in pred_sent_df.columns):
-                pred_window = pd.DataFrame()
+                sent_pred_window = pd.DataFrame()
             else:
-                pred_window = pred_sent_df[
-                    (pred_sent_df["datetime"] >= start_ts) & (pred_sent_df["datetime"] <= end_ts)
-                ].copy()
+                sent_pred_window = pred_sent_df[(pred_sent_df["datetime"] >= start_ts) & (pred_sent_df["datetime"] <= end_ts)].copy()
 
                 # Heatmap
-                st.markdown("### Predicciones (visualización)")
-                heat_df = pred_window.copy()
+                st.markdown("### Predicciones de sentimiento (visualización)")
+                heat_df = sent_pred_window.copy()
                 heat_df = heat_df[["datetime", "y_pred_rf", "y_pred_xgb"]].melt(
                     id_vars="datetime",
                     var_name="model",
@@ -922,7 +920,7 @@ def render_dashboard():
                 ).dropna()
                 heat = alt.Chart(heat_df).mark_rect().encode(
                     x=alt.X("yearmonthdate(datetime):T", title="Día"),
-                    y=alt.Y("model:N", title="Modelo"),
+                    y=alt.Y("model:N", title="Sentiment"),
                     color=alt.Color(
                         "mean(pred):Q",
                         scale=alt.Scale(domain=[0, 1], range=["#b91e0d", "#22a884"]),
@@ -930,19 +928,53 @@ def render_dashboard():
                     ),
                     tooltip=[
                         alt.Tooltip("yearmonthdate(datetime):T", title="Día"),
-                        alt.Tooltip("model:N", title="Modelo"),
+                        alt.Tooltip("model:N", title="Sentiment"),
                         alt.Tooltip("mean(pred):Q", title="Promedio", format=".2f")
                     ]
                 ).properties(height=120)
-                st.altair_chart(heat, use_container_width=True)
+                st.altair_chart(heat, width="stretch")
 
                 # Table
                 st.markdown("### Predicciones (datos tabulados)")
-                st.dataframe(pred_window.head(200), width='stretch')
-                csv_bytes = pred_window.to_csv(index=False).encode("utf-8")
-                st.download_button("Descargar predicciones (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv")
-                
-                cols = ["datetime", "y_pred_rf", "y_pred_xgb"]
+                st.dataframe(sent_pred_window.head(200), width='stretch')
+                csv_bytes = sent_pred_window.to_csv(index=False).encode("utf-8")
+                st.download_button("Descargar predicciones de sentimiento (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv", key="download_sentiment")
+
+            # Ventana precios (solo si existe datetime)
+            if (pred_price_df is None) or pred_price_df.empty or ("datetime" not in pred_price_df.columns):
+                price_pred_window = pd.DataFrame()
+            else:
+                price_pred_window = pred_price_df[(pred_price_df["datetime"] >= start_ts) & (pred_price_df["datetime"] <= end_ts)].copy()
+
+                # Heatmap
+                st.markdown("### Predicciones de precios (visualización)")
+                heat_df = price_pred_window.copy()
+                heat_df = heat_df[["datetime", "y_pred_rf_price", "y_pred_xgb_price"]].melt(
+                    id_vars="datetime",
+                    var_name="model",
+                    value_name="pred"
+                ).dropna()
+                heat = alt.Chart(heat_df).mark_rect().encode(
+                    x=alt.X("yearmonthdate(datetime):T", title="Día"),
+                    y=alt.Y("model:N", title="Price"),
+                    color=alt.Color(
+                        "mean(pred):Q",
+                        scale=alt.Scale(domain=[0, 1], range=["#b91e0d", "#22a884"]),
+                        legend=alt.Legend(title="Pred (promedio)")
+                    ),
+                    tooltip=[
+                        alt.Tooltip("yearmonthdate(datetime):T", title="Día"),
+                        alt.Tooltip("model:N", title="Price"),
+                        alt.Tooltip("mean(pred):Q", title="Promedio", format=".2f")
+                    ]
+                ).properties(height=120)
+                st.altair_chart(heat, width="stretch")
+
+                # Table
+                st.markdown("### Predicciones (datos tabulados)")
+                st.dataframe(price_pred_window.head(200), width='stretch')
+                csv_bytes = price_pred_window.to_csv(index=False).encode("utf-8")
+                st.download_button("Descargar predicciones de precios (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv", key="download_price")
 
     # --------- Tab Detalles ---------
     with tab_details:

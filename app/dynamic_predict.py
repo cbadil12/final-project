@@ -4,13 +4,9 @@
 # IMPORTS
 # ===============================
 # Standard library
-import os
 import logging
 from datetime import datetime
 from pathlib import Path
-
-import sys
-
 # Third-party libraries
 import pandas as pd
 
@@ -18,23 +14,34 @@ import pandas as pd
 from app.download_last_fng import download_latest_fng
 from app.compute_sentiment import run_sentiment_analysis
 from app.aggregate_features import aggregate_features
-from app.price_features import get_price_features_row_nearest
+from app.price_features import get_price_features_row_nearest, build_features
 from app.fetch_prices import fetch_prices_by_axis
 from app.run_model import load_model, run_prediction
+
+def _find_project_root() -> Path:
+    """
+    Encuentra el root del repo buscando data/processed en padres.
+    Funciona en local y en Render.
+    """
+    here = Path(__file__).resolve()
+    for base in [here.parents[1], here.parents[2], here.parents[3]]:
+        if (base / "data" / "processed").exists():
+            return base
+    # fallback seguro
+    return here.parents[2]
+PROJECT_ROOT = _find_project_root()
+DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+FNG_PATH = PROJECT_ROOT / "data" / "raw" / "fear_greed.csv"
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.info(f"PROJECT_ROOT={PROJECT_ROOT}")
+logging.info(f"DATA_PROCESSED_DIR={DATA_PROCESSED_DIR}")
+logging.info(f"Processed CSVs (first 20): {[p.name for p in DATA_PROCESSED_DIR.glob('*.csv')][:20]}")
 
 # ===============================
 # CONFIGURATION
 # ===============================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]  # .../src/backend/dynamic_predict.py -> /src -> / (root)
-
-# Asegura que el root esté en sys.path para imports tipo "from app...."
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-FNG_PATH = PROJECT_ROOT / "data" / "raw" / "fear_greed.csv"
 WINDOW_HOURS_DEFAULT = 24
 DEFAULT_MODEL = None
 
@@ -204,8 +211,6 @@ def get_features_live_price(target_ts, resolution):
     """
     Live price features using Binance OHLCV
     """
-    from app.fetch_prices import fetch_prices_by_axis
-    from app.price_features import build_features
 
     df = fetch_prices_by_axis(use_now=True, interval=resolution)
     if df is None or df.empty:
