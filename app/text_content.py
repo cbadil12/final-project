@@ -96,7 +96,7 @@ o flujos automatizados en versiones futuras.
 TEXT_EDA_1='''# Time-Series EDA: GLOBAL vs REGÍMENES
 
 ## Link al EDA
-[Time-series EDA](https://github.com/cbadil12/final-project/blob/carlos/notebooks/eda_timeseries_method_1.ipynb)
+[Time-series EDA](https://github.com/cbadil12/final-project/blob/main/notebooks/eda_timeseries_method_1.ipynb)
 
 ## Requisitos
 - Python con: `numpy`, `pandas`, `matplotlib`, `seaborn`, `statsmodels`, `pmdarima`.
@@ -209,7 +209,7 @@ TEXT_EDA_1='''# Time-Series EDA: GLOBAL vs REGÍMENES
 TEXT_EDA_2='''# Time-Series EDA: RESAMPLING
 
 ## Link al EDA
-[Time-series EDA](https://github.com/cbadil12/final-project/blob/carlos/notebooks/eda_timeseries_method_2.ipynb)
+[Time-series EDA](https://github.com/cbadil12/final-project/blob/main/notebooks/eda_timeseries_method_2.ipynb)
 
 ## Requisitos
 - Python con: `numpy`, `pandas`, `matplotlib`, `seaborn`, `scipy`, `statsmodels`.
