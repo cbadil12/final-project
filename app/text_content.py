@@ -206,7 +206,7 @@ TEXT_EDA_1='''# Time-Series EDA: GLOBAL vs REGÍMENES
 3) Gráficas de modelos ARIMA/SARIMA
 '''
 
-TEXT_EDA_2='''# Metodologia EDA para series de tiempo (eda_timeseries_method_2)
+TEXT_EDA_2='''# Time-Series EDA: RESAMPLING
 
 ## Link al EDA
 [Time-series EDA](https://github.com/cbadil12/final-project/blob/carlos/notebooks/eda_timeseries_method_2.ipynb)
@@ -214,7 +214,7 @@ TEXT_EDA_2='''# Metodologia EDA para series de tiempo (eda_timeseries_method_2)
 ## Requisitos
 - Python con: `numpy`, `pandas`, `matplotlib`, `seaborn`, `scipy`, `statsmodels`.
 
-## Entradas / configuracion clave
+## Inputs
 En la seccion **INPUTS** del notebook:
 - `raw_data_input_path`: ruta del CSV con datos crudos.
 - `processed_data_output_path`: carpeta de salida para CSVs.
@@ -281,10 +281,4 @@ En la seccion **INPUTS** del notebook:
 1) Entrenamiento de modelos en base a las grids generadas mediante SARIMAX.
 2) Selección de mejores modelos.
 3) Gráficas de predicción
----
-
-## Salidas esperadas (EDA)
-- Graficas: resamples, descomposiciones, ACF/PACF.
-- Tablas: estacionariedad (ADF), Box-Cox, differencing y parametros iniciales.
-- CSVs: `timeseries_train_*` y `timeseries_test_*` en `processed_data_output_path`.
 '''
