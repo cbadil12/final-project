@@ -911,7 +911,7 @@ def render_dashboard():
                 sent_pred_window = pred_sent_df[(pred_sent_df["datetime"] >= start_ts) & (pred_sent_df["datetime"] <= end_ts)].copy()
 
                 # Heatmap
-                st.markdown("### Predicciones de sentimiento (visualización)")
+                st.markdown("### Predicciones de sentimientos (visualización)")
                 heat_df = sent_pred_window.copy()
                 heat_df = heat_df[["datetime", "y_pred_rf", "y_pred_xgb"]].melt(
                     id_vars="datetime",
@@ -935,7 +935,7 @@ def render_dashboard():
                 st.altair_chart(heat, width="stretch")
 
                 # Table
-                st.markdown("### Predicciones (datos tabulados)")
+                st.markdown("### Predicciones de sentimientos (datos tabulados)")
                 st.dataframe(sent_pred_window.head(200), width='stretch')
                 csv_bytes = sent_pred_window.to_csv(index=False).encode("utf-8")
                 st.download_button("Descargar predicciones de sentimiento (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv", key="download_sentiment")
@@ -971,7 +971,7 @@ def render_dashboard():
                 st.altair_chart(heat, width="stretch")
 
                 # Table
-                st.markdown("### Predicciones (datos tabulados)")
+                st.markdown("### Predicciones de precios (datos tabulados)")
                 st.dataframe(price_pred_window.head(200), width='stretch')
                 csv_bytes = price_pred_window.to_csv(index=False).encode("utf-8")
                 st.download_button("Descargar predicciones de precios (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv", key="download_price")

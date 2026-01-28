@@ -104,8 +104,8 @@ def fetch_prices_by_axis(
 # ENTRY POINT (FOR STANDALONE TESTS)
 # ===============================
 if __name__ == "__main__":
-    START_DATE = "2026-01-05"
-    END_DATE = "2026-01-12"
+    START_DATE = "2026-01-18"
+    END_DATE = "2026-01-27"
     INTERVAL = "1h"  # "1h", "4h", or "24h"
     df_prices=(fetch_prices_by_axis(start_date=START_DATE, end_date=END_DATE, interval=INTERVAL))
     print(df_prices)
