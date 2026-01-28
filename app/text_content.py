@@ -283,3 +283,91 @@ En la seccion **INPUTS** del notebook:
 2) Selección de mejores modelos.
 3) Gráficas de predicción
 '''
+
+TEXT_EDA_SENTIMENT='''# EDA Sentimientos
+
+## Link al EDA
+[EDA Sentimientos](https://github.com/cbadil12/final-project/blob/main/notebooks/eda_timeseries_method_2.ipynb)
+
+Este EDA analiza el componente de **sentimiento** dentro del sistema de predicción de BTC.  
+El objetivo **no** es entrenar modelos en este notebook, sino **validar el dataset**, justificar decisiones de preprocesamiento y evaluar si el sentimiento aporta señal sobre el retorno futuro.
+
+## 1. Alcance y objetivos
+Se busca:
+- Justificar la selección y el preprocesamiento de datos.
+- Evaluar calidad y consistencia temporal.
+- Entender el comportamiento estadístico de features de sentimiento.
+- Ver si existe relación entre sentimiento y retornos futuros de BTC.
+
+No se incluye:
+- Indicadores técnicos de precio.
+- Modelos de series temporales (ARIMA/SARIMA).  
+Eso se maneja en otros módulos y luego se integra en el ensemble.
+
+## 2. Pipeline de datos (resumen)
+La base del dataset de sentimiento se construye así:
+1. **Ingesta de noticias crudas** (NewsAPI)
+2. **Análisis de sentimiento** por ejes temáticos (BTC / MACRO / TECH)
+3. **Agregación temporal** a 1h con features estadísticos (media, std, lags, shocks, etc.)
+4. **Contexto externo** con Fear & Greed Index (forward-fill)
+5. **Construcción del target** con precio BTC (retorno y dirección t+1h)
+
+Este EDA analiza el output final de ese pipeline.
+
+## 3. Cobertura temporal y régimen
+Se detectaron períodos históricos con:
+- Cobertura irregular de noticias.
+- Frecuencias inconsistentes.
+- Ejes temáticos incompletos.
+
+Por eso se establece un **cutoff temporal (2025-11-12)** para garantizar coherencia semántica.  
+El modelado solo considera datos **posteriores al cutoff**.
+
+## 4. Calidad de noticias crudas
+Tras el cutoff:
+- Hay flujo continuo de artículos.
+- Volumen estable.
+- Faltantes concentrados en metadatos opcionales.
+
+Esto confirma que valores 0 en features de sentimiento **representan horas sin noticias**, no datos faltantes.
+
+## 5. Sanity check del dataset final
+Se valida:
+- Integridad de columnas y tipos.
+- Consistencia temporal.
+- Coherencia entre features y target.
+
+## 6. Target
+El target es la **dirección del precio a 1 hora** (t+1h).  
+Se verifica estabilidad y correcta construcción antes de analizar features.
+
+## 7. Distribuciones de features
+Se inspeccionan:
+- Variables degeneradas.
+- Sesgos extremos.
+- Escalas problemáticas.
+
+Algunas features (por ejemplo, desviaciones estándar de sentimiento) resultan **degeneradas** y se descartan.
+
+## 8. Comportamiento temporal
+El sentimiento es **episódico** y **no estacionario**.  
+Se analiza su evolución para ver patrones útiles y posibles ventanas informativas.
+
+## 9. Relación feature–target
+Se estudian correlaciones simples:
+- La correlación lineal es **débil** en general.
+- No se asume causalidad; es una primera señal de diagnóstico.
+
+## 10. Análisis condicional
+Se evalúa el target bajo distintos **regímenes de sentimiento**:
+- Se observan efectos leves en contextos de alta intensidad noticiosa.
+- La señal es dependiente del régimen.
+
+## 11. Conclusiones
+- Datos pre-2025-11-12 son heterogéneos → no aptos para entrenamiento.
+- El sentimiento por sí solo **no predice bien** dirección a corto plazo.
+- Su valor es **contextual** y funciona mejor combinado con modelos de precio.
+- El EDA justifica usar sentimiento como **componente auxiliar** en un ensemble.
+
+---
+'''
