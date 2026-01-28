@@ -1,4 +1,4 @@
-# src/backend/dynamic_predict.py
+# app/dynamic_predict.py
 
 # ===============================
 # IMPORTS
@@ -211,7 +211,7 @@ def get_features_live_price(target_ts, resolution):
     if df is None or df.empty:
         return pd.DataFrame()
 
-    df["time"] = pd.to_datetime(df["time"], utc=True)
+    df["time"] = pd.to_datetime(df["datetime"], utc=True)
     df = df.set_index("time").sort_index()
 
     for c in ["open", "high", "low", "close", "volume"]:

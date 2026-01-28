@@ -12,23 +12,36 @@ from datetime import datetime, timedelta
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-    
 # 2. Load environment variables from .env
 from dotenv import load_dotenv
 load_dotenv()
-
 # 3. Third-party libraries (from requirements.txt)
 import pandas as pd
 from newsapi import NewsApiClient
 
-# 4. Local application imports
-from src.config.news_keywords import KEYWORD_MAP
-
 # ===============================
-# CONFIGURATION
+# NEWS QUERY AXES & KEYWORDS
 # ===============================
-
-LANGUAGE = "en"
+# 1. Direct Bitcoin Axis (BTC)
+KEYWORDS_BTC = (
+    "(bitcoin OR btc OR cryptocurrency OR 'crypto price' OR 'digital gold') "
+    "NOT (fraud OR scam OR hack OR theft)"
+)
+# 2. Technology & Infrastructure Axis (TECH)
+KEYWORDS_TECH = (
+    "('RAM memory' OR blockchain OR web3 OR metaverse OR 'AI investment' OR "
+    "'DeFi' OR 'mining rig' OR 'semiconductor shortage')"
+)
+# 3. Macro / Global Markets Axis (MACRO)
+KEYWORDS_MACRO = (
+    "(FED OR 'interest rate' OR inflation OR recession OR "
+    "'treasury bond' OR 'stock market crash' OR 'quantitative easing')"
+)
+KEYWORD_MAP = {
+    "BTC": KEYWORDS_BTC,
+    "TECH": KEYWORDS_TECH,
+    "MACRO": KEYWORDS_MACRO,
+}
 
 # ===============================
 # INITIALIZE CLIENT
@@ -82,7 +95,7 @@ def fetch_news_by_axis(
             try:
                 response = newsapi.get_everything(
                     q=query,
-                    language=LANGUAGE,
+                    language="en",
                     from_param=day_str,
                     to=day_str,
                     sort_by="relevancy",

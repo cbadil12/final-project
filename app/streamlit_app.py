@@ -18,39 +18,54 @@ from datetime import datetime, timezone, time as dtime
 import sys
 import os
 from pathlib import Path
-import base64
-import math
+from dataclasses import dataclass
+from typing import Tuple
 # 2. Third-party libraries (from requirements.txt)
 import pandas as pd
 import streamlit as st
 from streamlit_option_menu import option_menu
 import altair as alt
-
-# 4. Dynamic imports
+# 3. Modules imports
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from app.styles import set_styles, ICONS
+from app.text_content import TEXT_TITLE, TEXT_DISCLAIMER, TEXT_SUGGESTIONS, TEXT_CONTEXT, TEXT_EDA_1, TEXT_EDA_2
+# 4. Dynamic imports
 DYN_IMPORT_ERROR = None
 run_dynamic_predict = None
 run_fused_predict = None
 try:
-    from src.backend.dynamic_predict import run_dynamic_predict
+    from app.dynamic_predict import run_dynamic_predict
 except Exception as e:
     run_dynamic_predict = None
     DYN_IMPORT_ERROR = f"import run_dynamic_predict failed: {repr(e)}"
 
 # Import opcional: si no existe, NO rompe el resto
 try:
-    from src.backend.dynamic_predict import run_fused_predict
+    from app.dynamic_predict import run_fused_predict
 except Exception as e:
     run_fused_predict = None
     if DYN_IMPORT_ERROR:
         DYN_IMPORT_ERROR += f" | import run_fused_predict failed: {repr(e)}"
     else:
         DYN_IMPORT_ERROR = f"import run_fused_predict failed: {repr(e)}"
-# 3. Modules imports
-from src.frontend.data_loader import (load_prices, build_ohlc, load_news, filter_news_timewindow,
-    default_relevance_filter, quick_sentiment_score, load_prediction_csv)
+
+# ===============================
+# CLASSES
+# ===============================
+@dataclass
+class PriceData:
+    """
+    Contenedor para datos de precios:
+    - raw: dataframe original
+    - ohlc: dataframe con columnas open/high/low/close (si existen o se calculan)
+    - mode: indica si los datos vienen en formato OHLC, si se calcularon,
+      o si solo se puede usar una serie lineal.
+    """
+    raw: pd.DataFrame
+    ohlc: pd.DataFrame
+    mode: str  # 'ohlc', 'computed_ohlc', 'line'
 
 # ===============================
 # PATHS
@@ -79,79 +94,58 @@ PRED_XGB_4H_PATH = PROCESSED_DIR / "predictions_xgb_clf_4h.csv"
 SENTIMENT_ONLY_1H_PATH = PROCESSED_DIR / "sentiment_only_1h.csv"
 
 # ===============================
-# HELPER FUNCTIONS
+# STREAMLIT CONFIGURATION
 # ===============================
+NAV_INDEX = {"Home": 0, "Dashboard": 1, "Overview": 2} # Nvaigation menu
+st.set_page_config(page_title='BTC Predictor', page_icon='📈', layout='wide') # Page
+st.markdown(ICONS, unsafe_allow_html=True) # Bootstrap icons
+st.markdown(set_styles(ASSETS_DIR / "btc_logo_gray.png"), unsafe_allow_html=True) # Global styles
+
+# ===============================
+# STREAMLIT FUNCTIONS
+# ===============================
+# Navigates through menu
+def go_to(page_name: str):
+    st.session_state["nav_manual_select"] = NAV_INDEX.get(page_name, 0)
+
+# Renderizes disclaimer message
+def render_disclaimer():
+    st.markdown(f"<div class='disclaimer'>{TEXT_DISCLAIMER}</div>", unsafe_allow_html=True)
+
+# Builds OHLC graph using Altair
 def candlestick_chart(df_ohlc: pd.DataFrame,
-                      ts_col: str = 'datetime'):
-    """
-    Gráfico OHLC robusto en Altair:
-    - Limpia duplicados
-    - Asegura datetime correcto
-    - Ordena
-    - Limita densidad para evitar ruido
-    """
-
+                      ts_col: str = 'datetime',
+                      max_candle_no: int = 500):
     df = df_ohlc.copy()
-
-    # =========================
-    # 1. Normalizar timestamps
-    # =========================
+    # 1. Normalize timestamps
     df[ts_col] = pd.to_datetime(df[ts_col], utc=True, errors='coerce')
     df = df.dropna(subset=[ts_col])
-
-    # =========================
-    # 2. Eliminar duplicados EXACTOS
-    # =========================
+    # 2. Delete EXACT duplicates
     df = df.drop_duplicates(subset=[ts_col])
-
-    # =========================
-    # 3. Ordenar
-    # =========================
+    # 3. Sort
     df = df.sort_values(ts_col)
-
-    # =========================
-    # 4. (Opcional pero recomendado)
-    #    Limitar densidad de velas si el dataset es enorme
-    # =========================
-    MAX_CANDLES = 400
-    if len(df) > MAX_CANDLES:
-        df = df.tail(MAX_CANDLES)
-
-    # =========================
-    # 5. Construcción Altair
-    # =========================
+    # 4. Limit candle number to show
+    if len(df) > max_candle_no:
+        df = df.tail(max_candle_no)
+    # 5. Build chart
     base = alt.Chart(df).encode(x=f"{ts_col}:T")
-
     # High–Low vertical line
-    rule = base.mark_rule(color='white', size=1.2).encode(
-        y=alt.Y('low:Q', scale=alt.Scale(zero=False)),
-        y2='high:Q'
-    )
-
+    rule = base.mark_rule(color='white', size=1.2).encode(y=alt.Y('low:Q', scale=alt.Scale(zero=False)), y2='high:Q')
     # Candle body
     bar = base.mark_bar(size=4).encode(
         y='open:Q',
         y2='close:Q',
-        color=alt.condition(
-            'datum.open <= datum.close',
-            alt.value('#22a884'),   # verde
-            alt.value("#b91e0d")    # rojo
-        ),
+        color=alt.condition('datum.open <= datum.close', alt.value('#22a884'), alt.value("#b91e0d")),
         tooltip=[f"{ts_col}:T", 'open:Q', 'high:Q', 'low:Q', 'close:Q']
     )
-
     # Compose chart
-    chart = (rule + bar).properties(
-        width='container'
-    ).configure_view(
-        strokeWidth=0
-    ).configure_axis(
+    chart = (rule + bar).properties(width='container').configure_view(strokeWidth=0).configure_axis(
         gridColor='#333333',
         labelColor='white',
         titleColor='white'
     )
-
     return chart
+
 # Generates moving average (MA) line-graph
 # - price_col: columna de precios
 #- ma_window: tamaño de la ventana para la media móvil
@@ -170,6 +164,77 @@ def line_with_ma(df: pd.DataFrame,
     area = base.mark_area(opacity=0.2, color='#1f77b4').encode( y=f'{price_col}:Q' )
     ma = base.mark_line(color='#fde725').encode(y='ma:Q')
     return area + line + ma
+
+# ===============================
+# HELPER FUNCTIONS
+# ===============================
+# Builds an OHLC dataframe using the following rules:
+# 1) If open/high/low/close columns already exist → use them directly
+# 2) If only 'price' exists and there are enough points per interval → compute OHLC via resampling.
+# 3) If conditions are not met → return mode 'line'
+def build_ohlc(prices_df: pd.DataFrame, interval: str = '1h', min_points_per_candle: int = 2) -> PriceData:
+    df = prices_df.copy()
+    _freq_map = {
+        "1h": "1H",
+        "4h": "4H",
+        "24h": "24H",
+        "1d": "1D",
+        "d": "1D",
+    }
+    freq = _freq_map.get(str(interval).lower(), interval)
+    # Case 1: OHLC already avaiable
+    if all(c in df.columns for c in ['open', 'high', 'low', 'close']):
+        if "datetime" in df.columns:
+            df["datetime"] = pd.to_datetime(df["datetime"], utc=True, errors='coerce')
+            ohlc = df[['datetime', 'open', 'high', 'low', 'close']].dropna(subset=['close']).copy()
+        else:
+            ohlc = df[['open', 'high', 'low', 'close']].dropna(subset=['close']).copy()
+        return PriceData(raw=df, ohlc=ohlc, mode='ohlc')
+    # Caso 2: only price series
+    if 'price' not in df.columns:
+        return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
+    if "datetime" not in df.columns:
+        return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True, errors='coerce')    
+    s = df[['datetime', 'price']].dropna(subset=['price']).copy()
+    if s.empty:
+        return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
+    s = s.set_index("datetime").sort_index()
+    # Secure datetime index UTC
+    s.index = pd.to_datetime(s.index, utc=True, errors="coerce")
+    s = s.dropna(subset=["price"])
+    # Verifiy min density per interval
+    counts = s['price'].resample(freq).count()
+    valid_ratio = float((counts >= min_points_per_candle).mean()) if len(counts) else 0.0
+    if valid_ratio < 0.60:
+        return PriceData(raw=df, ohlc=pd.DataFrame(), mode='line')
+    # Resampling OHLC
+    o = s['price'].resample(freq).first()
+    h = s['price'].resample(freq).max()
+    l = s['price'].resample(freq).min()
+    c = s['price'].resample(freq).last()
+    ohlc = pd.DataFrame({'open': o, 'high': h, 'low': l, 'close': c}).dropna(subset=['close']).reset_index()
+    return PriceData(raw=df, ohlc=ohlc, mode='computed_ohlc')
+
+# Find the Nearest Row by datetime
+def _nearest_row_by_ts(df: pd.DataFrame,
+                       target_ts: pd.Timestamp,
+                       ts_col="datetime"):
+    if df is None or df.empty or ts_col not in df.columns or target_ts is None:
+        return None
+    tmp = df.dropna(subset=[ts_col]).copy()
+    if tmp.empty:
+        return None
+    tmp[ts_col] = pd.to_datetime(tmp[ts_col], utc=True, errors="coerce")
+    tmp = tmp.dropna(subset=[ts_col]).sort_values(ts_col)
+    pos = tmp[ts_col].searchsorted(target_ts)
+    if pos <= 0:
+        return tmp.iloc[0]
+    if pos >= len(tmp):
+        return tmp.iloc[-1]
+    before = tmp.iloc[pos - 1]
+    after = tmp.iloc[pos]
+    return before if abs((before[ts_col] - target_ts).total_seconds()) <= abs((after[ts_col] - target_ts).total_seconds()) else after
 
 def load_pred_if_exists(model_name: str,
                         resolution: str,
@@ -194,25 +259,105 @@ def load_pred_if_exists(model_name: str,
         df = df.dropna(subset=["datetime"]).sort_values("datetime")
     return df
 
-# ------------------ Funciones de utilidad ------------------
-def _asset_to_data_uri(path: Path) -> str | None:
-    if not path.exists():
-        return None
-    mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-    b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
-    return f"data:{mime};base64,{b64}"
+@st.cache_data(show_spinner=False)
+# Loads a news CSV.
+# - Requires a 'published_at' column.
+# - Normalizes text and removes common duplicates.
+def load_news(path_or_file: str) -> pd.DataFrame:
+    df = pd.read_csv(path_or_file)
+    if 'published_at' not in df.columns:
+        raise ValueError("El CSV de noticias debe incluir 'published_at'.")
+    df['published_at'] = pd.to_datetime(df['published_at'], utc=True, errors='coerce')
+    for c in ['title', 'description', 'source', 'axis']:
+        if c in df.columns:
+            df[c] = df[c].astype('string')
+    df = df.dropna(subset=['published_at']).sort_values('published_at')
+    # Erase duplicates
+    key_cols = [c for c in ['published_at', 'title', 'source'] if c in df.columns]
+    if key_cols:
+        df = df.drop_duplicates(subset=key_cols)
+    return df
 
 @st.cache_data(show_spinner=False)
-def _load_news_cached(path_str: str) -> pd.DataFrame:
-    return load_news(path_str)
-
-@st.cache_data(show_spinner=False)
+# Loads a prices CSV.
+# Minimum requirements:
+# - timestamp column (or date)
+# - price column or OHLC columns
 def _load_prices_compat(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, sep=";")
-    # Caso A: btcusd-1h.csv (datetime, open, high, low, close, volume)
-    df["datetime"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
+    # Normalize datetime column name
+    if 'datetime' not in df.columns and 'date' in df.columns:
+        df = df.rename(columns={'date': 'datetime'})
+    if 'datetime' not in df.columns:
+        raise ValueError("El CSV de precios debe incluir 'datetime'.")
+    df['datetime'] = pd.to_datetime(df['datetime'], utc=True, errors='coerce')
     df["price"] = pd.to_numeric(df.get("close"), errors="coerce")
-    return df.dropna(subset=["datetime"]).sort_values("datetime")
+    # Normalize numeric columns
+    for c in ['open', 'high', 'low', 'close', 'price']:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+    df = df.dropna(subset=['datetime']).sort_values('datetime')
+    return df
+
+# Loads a predictions CSV if it exists; otherwise returns an empty DataFrame.
+# Normalizes the timestamp column and renames the prediction column to pred_col_name.
+# Expected columns: timestamp + (y_pred/forecast/prediction/...) and optional y_true.
+def load_prediction_csv(path: str, pred_col_name: str) -> pd.DataFrame:
+    p = Path(path)
+    if not p.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(p)
+    # Normalize timestamp column name
+    if "datetime" not in df.columns:
+        for alt in ["date", "timestamp", "time"]:
+            if alt in df.columns:
+                df = df.rename(columns={alt: "datetime"})
+                break
+    if "datetime" not in df.columns:
+        return pd.DataFrame()
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
+    df = df.dropna(subset=["datetime"]).sort_values("datetime")
+    # Normalize common prediction column names
+    rename_map = {
+        "y_pred": pred_col_name,
+        "pred": pred_col_name,
+        "forecast": pred_col_name,
+        "prediction": pred_col_name,
+        "actual": "y_true",
+        "price": "y_true",
+        "y": "y_true",
+    }
+    for k, v in rename_map.items():
+        if k in df.columns and v not in df.columns:
+            df = df.rename(columns={k: v})
+    # If the prediction column still isn't present, give up safely
+    if pred_col_name not in df.columns:
+        return pd.DataFrame()
+    keep_cols = ["datetime", pred_col_name]
+    if "y_true" in df.columns:
+        keep_cols.append("y_true")
+    return df[keep_cols]
+
+# Computes a simple keyword-based sentiment score.
+# Returns:
+# - numeric score
+# - label ('Positive', 'Negative', 'Neutral')
+# - number of positive hits
+# - number of negative hits
+def quick_sentiment_score(news_df: pd.DataFrame) -> Tuple[float, str, int, int]:
+    if news_df.empty:
+        return 0.0, 'Neutral', 0, 0
+    # Keywords for a basic sentiment scoring
+    POS = {"bull", "rally", "gain", "up", "surge", "support", "buy", "approval", "adoption"}
+    NEG = {"bear", "dump", "down", "selloff", "risk", "regulation", "ban", "hack", "volatility"}
+    txt = (news_df.get('title', '').fillna('') + ' ' +
+           news_df.get('description', '').fillna('')).str.lower()
+    pos_hits = txt.apply(lambda s: sum(w in s for w in POS)).sum()
+    neg_hits = txt.apply(lambda s: sum(w in s for w in NEG)).sum()
+    total = max(pos_hits + neg_hits, 1)
+    score = (pos_hits - neg_hits) / total
+    label = 'Positivo' if score > 0.15 else 'Negativo' if score < -0.15 else 'Neutral'
+    return float(score), label, int(pos_hits), int(neg_hits)
 
 @st.cache_data(show_spinner=False)
 def _run_dynamic_predict_cached(
@@ -225,7 +370,6 @@ def _run_dynamic_predict_cached(
 ):
     if run_dynamic_predict is None:
         return {"msg": "dynamic_predict no disponible", "prediction": None, "confidence": 0.0}
-
     return run_dynamic_predict(
         target_ts=target_ts_str,
         resolution=resolution,
@@ -245,15 +389,12 @@ def _run_fused_predict_cached(
     sentiment_model_name: str | None = None,
     price_model_name: str | None = None,
 ):
-    
     # Sentiment NO soporta 24h en tus modelos; degradamos a 4h automáticamente
     sentiment_resolution = resolution if resolution in ("1h", "4h") else "4h"
     price_resolution = resolution
-
     # Si no tenemos NI dynamic, no hay nada que hacer
     if run_dynamic_predict is None and run_fused_predict is None:
         return {"msg": "dynamic_predict no disponible", "sentiment": None, "price": None}
-
     # Preferir fused si existe
     if run_fused_predict is not None and resolution != "24h":
         return run_fused_predict(
@@ -265,7 +406,6 @@ def _run_fused_predict_cached(
             sentiment_model_name=sentiment_model_name,
             price_model_name=price_model_name,
         )
-
     # ✅ Fallback: si fused no existe, hacer 2 llamadas como antes (pero dentro de UNA función cacheada)
     sent = run_dynamic_predict(
         target_ts=target_ts_sent_str,
@@ -275,7 +415,6 @@ def _run_fused_predict_cached(
         window_hours=window_hours,
         model_name=sentiment_model_name,  # None => default en run_model
     )
-
     price = run_dynamic_predict(
         target_ts=target_ts_price_str,
         resolution=price_resolution,
@@ -284,144 +423,7 @@ def _run_fused_predict_cached(
         window_hours=window_hours,
         model_name=price_model_name,      # None => default en run_model
     )
-
     return {"msg": "fallback(dynamic x2)", "sentiment": sent, "price": price}
-
-# ------------------ Config Streamlit ------------------
-st.set_page_config(page_title='BTC Predictor', page_icon='📈', layout='wide')
-
-# ----- Bootstrap Icons -----
-st.markdown(
-    """
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-    """,
-    unsafe_allow_html=True
-)
-
-# --- Estilos globales + Home hero ---
-btc_bg_uri = _asset_to_data_uri(ASSETS_DIR / "btc_logo_gray.png")
-
-st.markdown(
-    f"""
-    <style>
-    .main {{ background-color: #0F1015; color: #e5e7eb; }}
-    .stMetric {{ background-color: #0F1015 !important; }}
-    
-    /* Portada ("Home") */
-    .hero {{
-      min-height: 72vh; padding: 4rem 2rem; border-radius: 16px;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      background-color: #0F1015; color: #e5e7eb; position: relative; overflow: hidden;
-    }}
-    .hero::before{{
-      content:""; position:absolute; inset:0; background-repeat: repeat;
-      background-size: 220px; background-position: 0 0; opacity: 0.08;
-      filter: grayscale(100%); background-image: url('{btc_bg_uri if btc_bg_uri else ""}');
-    }}
-    .hero h1{{ margin:0 0 .5rem 0; font-size: clamp(2.2rem, 4vw, 3.4rem); z-index:1; }}
-    .hero .tagline{{ color:#94a3b8; font-size: 1.05rem; text-align:center; max-width: 900px; z-index:1; }}
-    .hero .cta{{ margin-top: 1.5rem; z-index:1; }}
-
-    /* Disclaimer message (footer global) */
-    .disclaimer {{
-    margin-top: 0.75rem;
-    color: #94a3b8;
-    font-size: 0.78rem;
-    opacity: 0.90;
-    text-align: center;
-    line-height: 1.25;
-    }}
-
-    /* Sidebar */
-    section[data-testid="stSidebar"] > div {{
-        display: flex; flex-direction: column; height: 100vh;
-    }}
-    section[data-testid="stSidebar"] div[data-testid="stSidebarContent"] {{
-        display: flex; flex-direction: column; height: 100%;
-    }}
-    .sidebar-footer {{
-        margin-top: auto; padding-top: 12px; border-top: 1px solid #2a2f3a;
-        color: #94a3b8; font-size: 0.78rem; opacity: 0.90; line-height: 1.25;
-    }}
-
-    .sidebar-footer .meta {{ margin-bottom: 6px; opacity: 0.95; }}
-    .sidebar-footer .disclaimer {{
-        margin-top: 6px; font-size: 0.74rem; opacity: 0.85; text-align: left;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-NAV_INDEX = {"Home": 0, "Dashboard": 1, "Overview": 2, "Recomendaciones": 3}
-def go_to(page_name: str):
-    st.session_state["nav_manual_select"] = NAV_INDEX.get(page_name, 0)
-
-DISCLAIMER_TEXT = (
-    "**Aviso: BTC Predictor es un proyecto demostrativo/educativo. "
-    "La información mostrada es solo informativa y no constituye asesoramiento financiero.**"
-)
-def render_disclaimer():
-    st.markdown(f"<div class='disclaimer'>{DISCLAIMER_TEXT}</div>", unsafe_allow_html=True)
-
-# ------------------ Definición de regímenes ------------------
-REGIME_BOUNDS = [
-    ("2012–2016", pd.Timestamp("2012-11-28 00:00:00", tz="UTC"), pd.Timestamp("2016-07-09 23:59:59", tz="UTC")),
-    ("2016–2020", pd.Timestamp("2016-07-10 00:00:00", tz="UTC"), pd.Timestamp("2020-05-10 23:59:59", tz="UTC")),
-    ("2020–2024", pd.Timestamp("2020-05-11 00:00:00", tz="UTC"), pd.Timestamp("2024-04-19 23:59:59", tz="UTC")),
-    ("2024–Actual", pd.Timestamp("2024-04-20 00:00:00", tz="UTC"), pd.Timestamp("2100-12-31 23:59:59", tz="UTC")),
-]
-
-def regime_for_timestamp(ts: pd.Timestamp) -> str | None:
-    if ts is None or pd.isna(ts):
-        return None
-    for name, r_start, r_end in REGIME_BOUNDS:
-        if r_start <= ts <= r_end:
-            return name
-    return None
-
-def bounds_for_regime(name: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
-    for r_name, r_start, r_end in REGIME_BOUNDS:
-        if r_name == name:
-            return r_start, r_end
-    return None
-
-
-def round_down_to_interval(ts: pd.Timestamp, interval: str) -> pd.Timestamp:
-    if interval == "1h":
-        return ts.replace(minute=0, second=0, microsecond=0)
-    if interval == "4h":
-        hr = (ts.hour // 4) * 4
-        return ts.replace(hour=hr, minute=0, second=0, microsecond=0)
-    if interval == "24h":
-        # borde inferior del día UTC
-        return ts.replace(hour=0, minute=0, second=0, microsecond=0)
-    return ts
-
-
-
-def _nearest_row_by_ts(df: pd.DataFrame, target_ts: pd.Timestamp, ts_col="datetime"):
-    if df is None or df.empty or ts_col not in df.columns or target_ts is None:
-        return None
-
-    tmp = df.dropna(subset=[ts_col]).copy()
-    if tmp.empty:
-        return None
-
-    tmp[ts_col] = pd.to_datetime(tmp[ts_col], utc=True, errors="coerce")
-    tmp = tmp.dropna(subset=[ts_col]).sort_values(ts_col)
-
-    pos = tmp[ts_col].searchsorted(target_ts)
-    if pos <= 0:
-        return tmp.iloc[0]
-    if pos >= len(tmp):
-        return tmp.iloc[-1]
-
-    before = tmp.iloc[pos - 1]
-    after = tmp.iloc[pos]
-    return before if abs((before[ts_col] - target_ts).total_seconds()) <= abs((after[ts_col] - target_ts).total_seconds()) else after
-
 
 def _direction_from_pred(base: float | None, pred: float | None, neutral_pct: float = 0.002):
     """Dirección usando cambio relativo vs base.
@@ -437,13 +439,13 @@ def _direction_from_pred(base: float | None, pred: float | None, neutral_pct: fl
         return ("BAJADA", "red", delta)
     return ("ESCENARIO NEUTRAL", "gray", delta)
 
-def _get_base_price_for_target(price_pack, fallback_df, target_ts: pd.Timestamp, horizon_hours: int):
+def _get_base_price_for_target(price_pack, fallback_df, target_ts: pd.Timestamp, price_horizon_hours: int):
     """Intenta base_ref = close en (target_ts - horizon). Si no existe, usa último close <= target_ts."""
     # Preferimos OHLC si existe
     ohlc = getattr(price_pack, "ohlc", None)
     if ohlc is not None and not ohlc.empty and "datetime" in ohlc.columns:
         ohlc = ohlc.sort_values("datetime")
-        t_prev = target_ts - pd.Timedelta(hours=horizon_hours)
+        t_prev = target_ts - pd.Timedelta(hours=price_horizon_hours)
         exact = ohlc[ohlc["datetime"] == t_prev]
         if not exact.empty and "close" in exact.columns:
             return float(exact["close"].iloc[0])
@@ -451,24 +453,13 @@ def _get_base_price_for_target(price_pack, fallback_df, target_ts: pd.Timestamp,
         prev = ohlc[ohlc["datetime"] <= target_ts].tail(1)
         if not prev.empty and "close" in prev.columns:
             return float(prev["close"].iloc[0])
-
     # Fallback: usar price_window/df original
     if fallback_df is not None and not fallback_df.empty and "datetime" in fallback_df.columns and "price" in fallback_df.columns:
         tmp = fallback_df.dropna(subset=["price"]).sort_values("datetime")
         prev = tmp[tmp["datetime"] <= target_ts].tail(1)
         if not prev.empty:
             return float(prev["price"].iloc[0])
-
     return None
-
-
-def _sentiment_label_to_class(sentiment_label: str | None):
-    """Mapea etiqueta de sentimiento a clase: Positivo=1, Negativo=0, Neutral=None."""
-    if sentiment_label == "Positivo":
-        return 1
-    if sentiment_label == "Negativo":
-        return 0
-    return None  # Neutral o desconocido
 
 def combine_final_signal(price_pred: int | None, sentiment_label: str | None):
     """
@@ -478,8 +469,12 @@ def combine_final_signal(price_pred: int | None, sentiment_label: str | None):
     - Si chocan => ESCENARIO MIXTO
     - Si falta uno => usa el que esté disponible, si no => NEUTRAL
     """
-    sent_cls = _sentiment_label_to_class(sentiment_label)
-
+    if sentiment_label == "Positivo":
+        sent_cls = 1
+    elif sentiment_label == "Negativo":
+        sent_cls = 0
+    else:
+        sent_cls = None  # Neutral o desconocido
     # Si hay precio, la señal base la decide precio salvo que choque con sentimiento
     if price_pred in (0, 1):
         if sent_cls is None:
@@ -488,17 +483,14 @@ def combine_final_signal(price_pred: int | None, sentiment_label: str | None):
         if price_pred == sent_cls:
             return ("SUBIDA", "green") if price_pred == 1 else ("BAJADA", "red")
         return ("ESCENARIO MIXTO", "gray")
-
     # Si no hay precio, usa sentimiento si es Pos/Neg
     if sent_cls in (0, 1):
         return ("SUBIDA", "green") if sent_cls == 1 else ("BAJADA", "red")
-
     return ("ESCENARIO NEUTRAL", "gray")
 
 def render_price_block(price_result: dict | None, horizon_label: str, debug_mode: bool):
     """Muestra la predicción técnica (precio) de forma consistente."""
     st.subheader("Predicción técnica (precio)")
-
     if isinstance(price_result, dict) and price_result.get("prediction") is not None:
         pr_cls = price_result.get("prediction")
         pr_conf = price_result.get("confidence", None)
@@ -510,224 +502,86 @@ def render_price_block(price_result: dict | None, horizon_label: str, debug_mode
             f"<h4 style='color:{pr_color}; margin:0'>{label} ({horizon_label})</h4>",
             unsafe_allow_html=True
         )
-
         try:
             pr_prog = int(max(0, min(100, float(pr_conf) * 100))) if pr_conf is not None else 50
         except Exception:
             pr_prog = 50
-
         st.progress(pr_prog)
-
         if "proba_up" in price_result:
             try:
                 st.caption(f"proba_up: {float(price_result['proba_up']):.2f}")
             except Exception:
                 pass
-
         if debug_mode:
             with st.expander("Detalles precio (debug)", expanded=False):
                 st.write(price_result)
     else:
         st.info("Pulsa 🚀 Ejecutar Predicción para calcular la predicción de precio.")
 
-# ------------------ Vistas ------------------
+# ===============================
+# NAVIGATION MENU RENDERS
+# ===============================
 def render_home():
     left, center_msg, right = st.columns([1,4,1])
     with center_msg:
-        st.markdown("""
-            <div class="hero">
-            <h1>BTC Predictor</h1>
-            <p class="tagline">
-                Predicción técnica + sentimiento para una señal de mercado más completa
-            </p>
-            <div class="cta">
-        """,
-          unsafe_allow_html=True)
-    left, center_button, right = st.columns([5,1,5])
+        st.markdown(TEXT_TITLE, unsafe_allow_html=True)
+    left, center_button, right = st.columns([5,2,5])
     with center_button:
         st.button("Ir a la App →", type="primary", on_click=go_to, args=("Dashboard",))
     left, center_disclaimer, right = st.columns([1,4,1])
     with center_disclaimer:
         render_disclaimer()
 
-OVERVIEW_MD = """
-## BTC Predictor
-
-En un mercado altamente volátil como el de Bitcoin, las variaciones de precio suelen 
-estar impulsadas no solo por factores técnicos, sino también por el contexto informativo 
-y emocional del mercado.  
-**BTC Predictor** combina **ambos mundos** para ofrecer una visión más completa del comportamiento del precio.
-
----
-
-### 🔎 ¿Qué integra?
-
-- **Datos cuantitativos:** precio, estructura OHLC, series temporales y estacionalidad por ciclos (halvings).  
-- **Datos cualitativos:** noticias filtradas y un análisis de sentimiento basado en ventanas recientes.  
-
-Esta combinación permite observar **qué está haciendo el precio** y **qué lo puede estar impulsando**.
-
----
-
-### 🎯 ¿Qué hace el predictor?
-
-BTC Predictor permite dos enfoques de análisis complementarios:
-
-#### **1. Modo Global**
-Analiza un rango seleccionado por el usuario y construye:
-
-- Precio histórico (1h / 4h) con resampling OHLC  
-- Noticias filtradas por relevancia  
-- Sentimiento agregado en ventanas recientes  
-- **Predicción técnica t+1** (Random Forest y ARIMA global)
-
-*Ideal para analizar periodos amplios y observar cómo cambian las señales en función del sentimiento y la acción del precio.*
-
-
-
-#### **2. Modo Regímenes (Halvings)**
-El usuario selecciona una fecha objetivo y la aplicación identifica automáticamente 
-el **régimen al que pertenece**, aplicando el **modelo ARIMA específico de ese ciclo**.
-
-Permite:
-- evaluar la estacionalidad entre halvings,  
-- comparar predicción vs precio real en periodos pasados,  
-- y estudiar cómo cambian los patrones entre ciclos.
-
----
-
-### 📌 Enfoque del proyecto
-
-El objetivo es mostrar un **modelo predictivo funcional**, construido con técnicas 
-de series temporales y enriquecido con información contextual.  
-La aplicación facilita la exploración visual y comparativa entre modos, 
-permitiendo entender cómo reaccionan los modelos ante diferentes condiciones del mercado.
-
-Este diseño permite extender el sistema fácilmente con nuevos modelos, fuentes de datos
-o flujos automatizados en versiones futuras.
-"""
-
 def render_overview():
-    st.markdown(OVERVIEW_MD)
+    tab_context, tab_eda_1, tab_eda_2, tab_future = st.tabs(["Contexto", "Time-series EDA (Global vs Regímenes)", "Time-series EDA (Resampling)", "Futuras implementaciones"])
+    with tab_context:
+        st.markdown(TEXT_CONTEXT)
+    with tab_eda_1:
+        st.markdown(TEXT_EDA_1)
+    with tab_eda_2:
+        st.markdown(TEXT_EDA_2)
+    with tab_future:
+        st.markdown(TEXT_SUGGESTIONS)
     st.markdown("</div></div>", unsafe_allow_html=True)
     render_disclaimer()
 
 
-def render_recommendations():
-    st.header("🔮 Recomendaciones y mejoras futuras")
-
-    st.markdown("""
-    Esta sección resume **extensiones naturales** de la solución, centradas en 
-    refinar y escalar lo que ya funciona en **BTC Predictor**, a futuro.
-
-    ---
-
-    ### 📡 1. Integración con datos en tiempo real
-    - Conectar una API de precios en vivo. Limitaciones actuales por rango.
-    - Añadir el indicador *Fear & Greed Index* desde su API oficial.
-    - Actualizar las noticias automáticamente para que la señal de sentimiento
-      se alimente del mercado actual, de una manera más rápida.
-
-    
-
-    ### 🔄 2. Automatizar el pipeline de predicción
-    - Generar predicciones bajo demanda para fechas específicas.
-    - Registrar entradas/salidas para evaluar históricamente el rendimiento del predictor.
-
-    
-
-    ### 📏 3. Evaluación y calibración continua
-    - Implementar backtesting para comparar las predicciones con el precio real.
-    - Analizar el rendimiento de cada régimen
-
-    
-
-    ### 💬 4. Extender el análisis de sentimiento
-    - Incluir nuevas fuentes como redes sociales o el índice *Fear & Greed* diario.
-    - Añadir ventanas ajustables por tipo de evento (últimas 4h, 24h, etc.)
-    - Incorporar mayor granularidad en el peso de cada noticia, y mejorar el componente cualitativo sin cambiar el modelo predictivo.
-
-    
-
-    ### 🎛️ 5. Mejoras de experiencia de usuario
-    - Agregar un modo “principiante” con explicaciones guiadas.
-    - Resaltado visual cuando los modelos coinciden o divergen.
-    - Exportación de vistas en PDF.
-
-    ---
-
-    En conjunto, estas recomendaciones **no cambian la lógica del predictor actual**, 
-    sino que lo fortalecen y lo preparan para escenarios más dinámicos y escalables.
-    """)
-    render_disclaimer()
-
-
 def render_dashboard():
-    st.title('BTC Predictor')
-    st.caption("Dashboard para analizar precio, noticias y sentimiento del mercado en Bitcoin ₿.")
-
-    # Abierto (una vez por sesión)
+    # Time in which the dashbord has been opened
     if "opened_at_utc" not in st.session_state:
         st.session_state["opened_at_utc"] = datetime.now(timezone.utc)
-
-    # -------------- Sidebar --------------
+    # -------------------------------    
+    # Sidebar title
+    # -------------------------------
     st.sidebar.title("Panel de control")
-
+    # -------------------------------    
+    # Debug toggle
+    # -------------------------------
     debug_mode = st.sidebar.toggle("Mostrar detalles técnicos (debug)", value=False)
-
     if debug_mode and DYN_IMPORT_ERROR:
         st.sidebar.error(f"Error import dynamic_predict: {DYN_IMPORT_ERROR}")
         st.sidebar.write({
             "run_dynamic_predict_is_none": run_dynamic_predict is None,
             "DYN_IMPORT_ERROR": DYN_IMPORT_ERROR
         })
-
-
-    # Modo (Global vs Regímenes) — Global por defecto
-    mode = st.sidebar.selectbox(
-        "Modo de análisis",
-        ["Global", "Regímenes (Halvings)"],
-        index=0,
-        key="mode",
-    )
-
-    # Granularidad
+    # -------------------------------    
+    # Granularity/Interval selectbox
+    # -------------------------------
     interval_options = ["1h", "4h", "24h"]
     interval = st.sidebar.selectbox(
-        "Granularidad (gráfico)",
+        "Granularidad",
         interval_options,
-        index=interval_options.index(st.session_state.get("interval", "1h"))
-            if st.session_state.get("interval", "1h") in interval_options else 0,
+        index=interval_options.index(st.session_state.get("interval", "1h")) if st.session_state.get("interval", "1h") in interval_options else 0,
         key="interval",
-        help="Frecuencia del precio para el gráfico (OHLC/linea)."
+        help="Frecuencia del precio para gráfico y predicción."
     )
-
     INTERVAL_TO_HOURS = {"1h": 1, "4h": 4, "24h": 24}
-    horizon_hours = INTERVAL_TO_HOURS.get(interval, 1)
-    st.sidebar.caption(f"Predicción sentimiento: **t+1** (siguiente {interval} → +{horizon_hours}h)")
-
-    
-    # Horizonte precio = igual que granularidad del gráfico (simple y coherente)
-    price_horizon = interval
-    price_horizon_hours = horizon_hours
-
-    
-    # PENDIENTE si se borra o no ---------------- Horizonte (para el MODELO DE PRECIO) ----------------
-    #price_horizon_options = ["1h", "4h", "24h"]
-    #price_horizon = st.sidebar.selectbox(
-        #"Horizonte predicción (precio)",
-        #price_horizon_options,
-        #index=price_horizon_options.index(st.session_state.get("price_horizon", "24h"))
-            #if st.session_state.get("price_horizon", "24h") in price_horizon_options else 2,
-        #key="price_horizon",
-        #help="Horizonte del modelo de precio (dirección). 24h funciona como proxy 'diario' más estable."
-    #)
-
-    #PRICE_HORIZON_TO_HOURS = {"1h": 1, "4h": 4, "24h": 24}
-    #price_horizon_hours = PRICE_HORIZON_TO_HOURS.get(price_horizon, 24)
-    #st.sidebar.caption(f"Predicción precio: **t+{price_horizon}** (→ +{price_horizon_hours}h)")
-
-    # -------------- Nueva selección de datasets según granularidad --------------
+    price_horizon_hours = INTERVAL_TO_HOURS.get(interval, 1)
+    st.sidebar.caption(f"Predicción: **t+1** (siguiente {interval} → +{price_horizon_hours}h)")
+    # -------------------------------    
+    # Dataset loading
+    # -------------------------------
+    # Set raw dataset path according to granularity
     if interval == "1h":
         price_path = PRICE_1H_RAW_PATH
     elif interval == "4h":
@@ -735,435 +589,257 @@ def render_dashboard():
     else:
         price_path = PRICE_24H_RAW_PATH
     news_path = NEWS_RAW_PATH
-
-    # -------------- Carga de datasets (con caché) --------------
+    # Load raw datasets
     prices_df = _load_prices_compat(str(price_path))
-    news_df   = _load_news_cached(str(news_path)) if news_path.exists() else pd.DataFrame()
-
+    news_df   = load_news(str(news_path)) if news_path.exists() else pd.DataFrame()
     if prices_df.empty:
         st.error("No se pudieron cargar precios (revisa data/raw y/o data/processed).")
         return
-
-    # -------------- Widgets dependientes del modo --------------
-    # Global: rango
-    if mode == "Global":
-        # Rango por defecto (60 días hasta el max de datasets)
-        if not news_df.empty:
-            min_ts = min(prices_df["datetime"].min(), news_df["published_at"].min())
-            max_ts = max(prices_df["datetime"].max(), news_df["published_at"].max())
-        else:
-            min_ts = prices_df["datetime"].min()
-            max_ts = prices_df["datetime"].max()
-
-        default_end = max_ts.date()
-        default_start = (max_ts - pd.Timedelta(days=60)).date()
-
-        start_date = st.sidebar.date_input(
-            "Fecha inicio", value=st.session_state.get("start_date", default_start),
-            key="start_date"
-        )
-        end_date = st.sidebar.date_input(
-            "Fecha fin", value=st.session_state.get("end_date", default_end),
-            key="end_date"
-        )
-        relevance = st.sidebar.checkbox(
-            "Filtrar noticias relevantes",
-            value=st.session_state.get("relevance", True),
-            key="relevance",
-            help="Aplica filtro simple ‘bitcoin|btc’ en título/descripcion."
-        )
-
-        start_ts = pd.Timestamp(start_date).tz_localize("UTC")
-        end_ts   = pd.Timestamp(end_date).tz_localize("UTC") + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-
-        # Filtros data
-        price_window = prices_df[(prices_df["datetime"] >= start_ts) & (prices_df["datetime"] <= end_ts)].copy()
-
-        if not news_df.empty:
-            news_window = filter_news_timewindow(news_df, start_ts, end_ts)
-            if relevance:
-                news_window = default_relevance_filter(news_window)
-        else:
-            news_window = pd.DataFrame()
-
-        # Sidebar footer
-        opened = st.session_state["opened_at_utc"]
-        st.sidebar.markdown(
-            f"""
-            <div class="sidebar-footer">
-                <div class="meta"><b>Abierto:</b> {opened:%Y-%m-%d %H:%M} UTC</div>
-                <div class="meta"><b>Datos hasta:</b> {prices_df['datetime'].max():%Y-%m-%d %H:%M} UTC</div>
-                <div class="meta"><p></p></div>
-                <div class="disclaimer">{DISCLAIMER_TEXT}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    # ----------*----- Regímenes: fecha objetivo (y hora) -----*----------
+    # -------------------------------    
+    # Start and End date inputs
+    # -------------------------------
+    if not news_df.empty:
+        max_ts = max(prices_df["datetime"].max(), news_df["published_at"].max())
     else:
-        # Elegir fecha/ hora objetivo (UTC) — front asigna régimen automáticamente
-        now_utc = pd.Timestamp.utcnow()
-
-        tgt_date = st.sidebar.date_input(
-            "Fecha objetivo (UTC)",
-            value=now_utc.date(),
-            key="target_date"
-        )
-        default_time = dtime(hour=now_utc.hour, minute=0, second=0)
-        tgt_time = st.sidebar.time_input(
-            "Hora objetivo (UTC)",
-            value=default_time,
-            key="target_time"
-        )
-        target_naive = datetime.combine(pd.to_datetime(tgt_date).date(), tgt_time)
-        target_ts = pd.Timestamp(target_naive).tz_localize("UTC")
-        target_ts = round_down_to_interval(target_ts, interval)
-
-        # Determinar régimen por target_ts
-        regime = regime_for_timestamp(target_ts) or "2024–Actual"
-        r_bounds = bounds_for_regime(regime)
-        if r_bounds:
-            r_start, r_end = r_bounds
-            # Clamp a límites del régimen + realinear
-            if target_ts < r_start: target_ts = round_down_to_interval(r_start, interval)
-            if target_ts > r_end:   target_ts = round_down_to_interval(r_end, interval)
-        else:
-            r_start, r_end = pd.Timestamp("2012-01-01", tz="UTC"), pd.Timestamp("2100-12-31", tz="UTC")
-
-        st.sidebar.caption(f"Régimen detectado: **{regime}**")
-
-        # Para el gráfico de contexto, mostramos el tramo del régimen
-        price_window = prices_df[(prices_df["datetime"] >= r_start) & (prices_df["datetime"] <= min(prices_df['datetime'].max(), r_end))].copy()
-        news_window = pd.DataFrame()  # no aplica a pred futura por diseño
-
-        # Guardar en session para usar en tabs
-        st.session_state["__regime_target_ts__"] = target_ts
-        st.session_state["__regime_name__"]      = regime
-        st.session_state["__regime_bounds__"]    = (r_start, r_end)
-
-        # Sidebar footer
-        opened = st.session_state["opened_at_utc"]
-        st.sidebar.markdown(
-            f"""
-            <div class="sidebar-footer">
-                <div class="meta"><b>Abierto:</b> {opened:%Y-%m-%d %H:%M} UTC</div>
-                <div class="meta"><b>Régimen:</b> {regime} ({r_start:%Y-%m-%d} → {r_end:%Y-%m-%d})</div>
-                <div class="meta"><p></p></div>
-                <div class="disclaimer">{DISCLAIMER_TEXT}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-    
-    st.sidebar.markdown("---")
-    run_pred = st.sidebar.button(
-        "🚀 Ejecutar Predicción",
-        help="Ejecuta la predicción live usando los modelos disponibles."
+        max_ts = prices_df["datetime"].max()
+    start_date = st.sidebar.date_input("Fecha inicio", value=st.session_state.get("start_date", (max_ts - pd.Timedelta(days=60)).date()), key="start_date")
+    end_date = st.sidebar.date_input("Fecha fin", value=st.session_state.get("end_date", max_ts.date()), key="end_date")
+    start_ts = pd.Timestamp(start_date).tz_localize("UTC")
+    end_ts   = pd.Timestamp(end_date).tz_localize("UTC") + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    # -------------------------------    
+    # Filter relevant news checkbox
+    # -------------------------------
+    relevance = st.sidebar.checkbox("Filtrar noticias relevantes", value=st.session_state.get("relevance", True), key="relevance", help="Aplica filtro simple ‘bitcoin|btc’ en título/descripcion.")   
+    # Build price window
+    price_window = prices_df[(prices_df["datetime"] >= start_ts) & (prices_df["datetime"] <= end_ts)].copy()  
+    # Build news window
+    if not news_df.empty:
+        news_window = news_df[(news_df['published_at'] >= start_ts) & (news_df['published_at'] <= end_ts)].copy()
+        if relevance:
+            if not news_window.empty:
+                txt = (news_window.get('title', '').fillna('') + ' ' + news_window.get('description', '').fillna('')).str.lower()
+                mask = txt.str.contains(r'(bitcoin|btc)', regex=True)
+                news_window =  news_window[mask].copy()
+    else:
+        news_window = pd.DataFrame()
+    # -------------------------------    
+    # Sidebar footer
+    # -------------------------------
+    st.sidebar.markdown(
+        f"""
+        <div class="sidebar-footer">
+            <div class="meta"><b>Hora de comienzo de esta sesión:</b> {st.session_state["opened_at_utc"]:%Y-%m-%d %H:%M} UTC</div>
+            <div class="meta"><b>Datos disponibles hasta:</b> {prices_df['datetime'].max():%Y-%m-%d %H:%M} UTC</div>
+            <div class="meta"><b></b></div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
-    # --- Feedback inmediato del botón ---
-    if run_pred:
-        st.toast("Ejecutando predicción dinámica…", icon="🚀")
-
-
-    st.sidebar.markdown("---")
-    if st.sidebar.button(
-        "Actualizar datos",
-        type="secondary",
-        help="Refresca la información si se actualizaron CSVs en data/processed (limpia caché y recarga)."
-    ):
+    # -------------------------------    
+    # Refresh data button
+    # -------------------------------
+    refresh_data = st.sidebar.button("Actualizar datos", type="secondary", help="Refresca la información si se actualizaron CSVs en data/processed (limpia caché y recarga).")
+    if refresh_data:
         st.cache_data.clear()
         st.rerun()
-
+    st.sidebar.markdown("---")
+    # -------------------------------    
+    # Prediction button
+    # -------------------------------
+    run_pred = st.sidebar.button("🚀 Ejecutar Predicción", type="primary", help="Ejecuta la predicción live usando los modelos disponibles.")
+    if run_pred:
+        st.toast("Ejecutando predicción dinámica…", icon="🚀")
+    # -------------------------------    
+    # Sidebar disclaimer
+    # -------------------------------
+    st.sidebar.markdown(
+        f"""
+        <div class="sidebar-footer">
+            <div class="disclaimer">{TEXT_DISCLAIMER}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
     # ------------------ Precio (OHLC o línea) ------------------
     price_pack = build_ohlc(price_window, interval=interval, min_points_per_candle=2)
-    col_price, col_stats = st.columns([2, 1])
-
-    with col_price:
-        st.subheader("Precio BTC")
-        if price_pack.mode in ("ohlc", "computed_ohlc") and not price_pack.ohlc.empty:
-            chart = candlestick_chart(price_pack.ohlc, ts_col="datetime").properties(height=380)
+    
+    st.subheader("Precio histórico de BTC (velas de " + interval + ")")
+    max_candle_no = st.number_input(
+        "Número máximo de velas a mostrar",
+        min_value=500,
+        key="max_candle_number",
+        max_value=100000, step=500)
+    if price_pack.mode in ("ohlc", "computed_ohlc") and not price_pack.ohlc.empty:
+        chart = candlestick_chart(price_pack.ohlc, ts_col="datetime", max_candle_no=max_candle_no).properties(height=380)
+        st.altair_chart(chart, width='stretch')
+    else:
+        non_null = price_window.dropna(subset=["price"]).copy()
+        if not non_null.empty:
+            chart = line_with_ma(non_null, ts_col="datetime", price_col="price", ma_window=24).properties(height=380)
             st.altair_chart(chart, width='stretch')
         else:
-            non_null = price_window.dropna(subset=["price"]).copy()
-            if not non_null.empty:
-                chart = line_with_ma(non_null, ts_col="datetime", price_col="price", ma_window=24).properties(height=380)
-                st.altair_chart(chart, width='stretch')
-            else:
-                st.warning("No hay datos de precio disponibles en el rango/regimen mostrado.")
+            st.warning("No hay datos de precio disponibles en el rango/regimen mostrado.")
+
+    st.divider()
 
     # ------------------ Panel Sentimiento / Señal ------------------
-    with col_stats:
-        st.subheader("Sentimiento del mercado")
+    col_market_feel, col_prediction, col_final_signal = st.columns([1,1,1])
+    RECENT_HOURS = 48
+    if news_window.empty:
+        sentiment_score, sentiment_label, pos_hits, neg_hits = 0.0, "Neutral", 0, 0
+        used_scope = "sin noticias"
+    else:
+        cutoff = end_ts - pd.Timedelta(hours=RECENT_HOURS)
+        news_recent = news_window[news_window["published_at"] >= cutoff].copy()
+        used_scope = f"últimas {RECENT_HOURS}h" if not news_recent.empty else f"rango completo (no hubo noticias en últimas {RECENT_HOURS}h)"
+        if news_recent.empty:
+            news_recent = news_window
 
-        if mode == "Global":
-            RECENT_HOURS = 48
-            if news_window.empty:
-                sentiment_score, sentiment_label, pos_hits, neg_hits = 0.0, "Neutral", 0, 0
-                used_scope = "sin noticias"
+        if "sentiment_score" in news_recent.columns:
+            s = pd.to_numeric(news_recent["sentiment_score"], errors="coerce").dropna()
+            sentiment_score = float(s.mean()) if not s.empty else 0.0
+            pos_hits = int((s > 0.05).sum())
+            neg_hits = int((s < -0.05).sum())
+
+            # Etiqueta con umbral moderado (evitar falsas neutras)
+            if sentiment_score > 0.05:
+                sentiment_label = "Positivo"
+            elif sentiment_score < -0.05:
+                sentiment_label = "Negativo"
             else:
-                cutoff = end_ts - pd.Timedelta(hours=RECENT_HOURS)
-                news_recent = news_window[news_window["published_at"] >= cutoff].copy()
-                used_scope = f"últimas {RECENT_HOURS}h" if not news_recent.empty else f"rango completo (no hubo noticias en últimas {RECENT_HOURS}h)"
-                if news_recent.empty:
-                    news_recent = news_window
-
-                if "sentiment_score" in news_recent.columns:
-                    s = pd.to_numeric(news_recent["sentiment_score"], errors="coerce").dropna()
-                    sentiment_score = float(s.mean()) if not s.empty else 0.0
-                    pos_hits = int((s > 0.05).sum())
-                    neg_hits = int((s < -0.05).sum())
-
-                    # Etiqueta con umbral moderado (evitar falsas neutras)
-                    if sentiment_score > 0.05:
-                        sentiment_label = "Positivo"
-                    elif sentiment_score < -0.05:
-                        sentiment_label = "Negativo"
-                    else:
-                        sentiment_label = "Neutral"
-                else:
-                    sentiment_score, sentiment_label, pos_hits, neg_hits = quick_sentiment_score(news_recent)
-
-            prob = int((sentiment_score + 1) * 50)
-            prob = max(0, min(100, prob))
-            st.metric("Sentimiento agregado", sentiment_label, f"{sentiment_score:+.2f}")
-            st.progress(prob)
-            st.caption(f"Probabilidad (escala interna): {prob}%")
-            st.caption(f"Hits → Positivos: {pos_hits} | Negativos: {neg_hits}")
-            st.caption(f"Ventana usada para el sentimiento: {used_scope}")
-
-            # --- Señal final (Global) basada en predicción t+1 ---
-            last_series = price_window.dropna(subset=["price"])
-            last_price = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
-            last_seen_ts = last_series["datetime"].max() if not last_series.empty else None
-            
-            target_ts_g = None
-            if last_seen_ts is not None:
-                target_ts_g = last_seen_ts + pd.Timedelta(hours=horizon_hours)
-
-
-            # Cargar predicciones
-            if interval == "1h":
-                rf_path = PRED_RF_1H_PATH
-            else:
-                rf_path = PRED_RF_4H_PATH
-            
-            rf_df_sig = load_prediction_csv(str(rf_path), "y_pred")
-            ar_df_sig = pd.DataFrame()  # aún no tienes ARIMA global
-
-            # --- Inicializar SIEMPRE para evitar UnboundLocalError en debug ---
-            dyn_pred_class = None
-            dyn_conf = None
-            pred_used = None
-
-            pred_rf = None
-            pred_rf_proba = None
-
-            # --- Buscar predicción precomputada (CSV) ---
-            
-            if target_ts_g is not None and not rf_df_sig.empty and "datetime" in rf_df_sig.columns:
-                row = rf_df_sig[rf_df_sig["datetime"] == target_ts_g]
-                if row.empty:
-                    nearest = _nearest_row_by_ts(rf_df_sig, target_ts_g)
-                    if nearest is not None:
-                        pred_rf = nearest.get("y_pred", None)
-                        pred_rf_proba = nearest.get("proba_up", None)
-                else:
-                    pred_rf = row["y_pred"].iloc[0] if "y_pred" in row.columns else None
-                    pred_rf_proba = row["proba_up"].iloc[0] if "proba_up" in row.columns else None
-
-            # --- Predicción dinámica si el usuario presiona el botón ---
-            dyn_pred_class = None
-            dyn_conf = None
-
-            if run_pred and target_ts_g is not None:
-                target_ts_price = last_seen_ts + pd.Timedelta(hours=price_horizon_hours)
-
-                with st.spinner("Ejecutando predicción dinámica (Fusion: sentimiento + precio)…"):
-                    fused = _run_fused_predict_cached(
-                        target_ts_sent_str=str(target_ts_g),
-                        target_ts_price_str=str(target_ts_price),
-                        resolution=interval,      # 1h/4h/24h (lo que elijas en granularidad)
-                        mode="auto",
-                        window_hours=24,
-                        sentiment_model_name="xgb_clf",   # deja que el backend elija defaults
-                        price_model_name="xgb_price",
-                    )
-
-                # Guardar en session_state como antes
-                st.session_state["__dyn_global_result__"] = fused.get("sentiment")
-                st.session_state["__dyn_global_price_result__"] = fused.get("price")
-
-                # Debug
-                if debug_mode:
-                    with st.expander("Fusion result (debug)", expanded=False):
-                        st.write(fused)
-            
-            # ====================== BLOQUE FINAL GLOBAL (ORDEN: Sentimiento -> Precio -> Señal final) ======================
-
-            # 1) Predicción técnica de PRECIO (ya la guardaste cuando run_pred)
-            price_result = st.session_state.get("__dyn_global_price_result__")
-
-            # Mostrar bloque de precio (t+interval o el horizon que uses)
-            render_price_block(price_result, horizon_label=price_horizon, debug_mode=debug_mode)
-
-            # 2) Construir señal final combinada (Precio + Sentimiento)
-            price_cls = None
-            price_conf = None
-            if isinstance(price_result, dict):
-                price_cls = price_result.get("prediction")
-                price_conf = price_result.get("confidence")
-
-            # sentiment_label ya existe en Global (Positivo/Negativo/Neutral) por tu cálculo con news
-            final_label, final_color = combine_final_signal(price_cls, sentiment_label)
-
-            # confianza final: prioriza precio si existe, si no usa la del modelo de sentimiento si existe, si no 50%
-            final_conf = price_conf if price_conf is not None else dyn_conf
-            try:
-                prob_final = int(max(0, min(100, float(final_conf) * 100))) if final_conf is not None else 50
-            except Exception:
-                prob_final = 50
-
-            # 3) Mostrar Señal final (COMBINADA)
-            st.subheader("Señal final")
-            st.markdown(
-                f"<h3 style='color:{final_color}; margin:0'>{final_label}</h3>",
-                unsafe_allow_html=True
-            )
-            st.progress(prob_final)
-
-            # Debug opcional
-            if debug_mode:
-                with st.expander("Detalles técnicos (debug)", expanded=False):
-                    st.write({
-                        "sentiment_label": sentiment_label,
-                        "price_prediction": price_cls,
-                        "price_conf": price_conf,
-                        "dyn_sent_prediction": dyn_pred_class,
-                        "dyn_sent_conf": dyn_conf,
-                        "final_label": final_label
-                    })        
- 
+                sentiment_label = "Neutral"
         else:
-            # Regímenes: usar predicción dinámica al pulsar botón; fallback a tendencia si no hay resultado
-            target_ts = st.session_state.get("__regime_target_ts__")
-            regime    = st.session_state.get("__regime_name__")
-            st.info("En modo Regímenes, la predicción dinámica decide si usa histórico o live según disponibilidad de datos.")
+            sentiment_score, sentiment_label, pos_hits, neg_hits = quick_sentiment_score(news_recent)
 
-            final_label, color = "ESCENARIO NEUTRAL", "gray"
-            conf = None
+    prob = int((sentiment_score + 1) * 50)
+    prob = max(0, min(100, prob))
+    with col_market_feel:
+        st.subheader("Sentimiento del mercado")
+        st.metric("Sentimiento agregado", sentiment_label, f"{sentiment_score:+.2f}")
+        st.progress(prob)
+        st.caption(f"Probabilidad (escala interna): {prob}%")
+        st.caption(f"Hits → Positivos: {pos_hits} | Negativos: {neg_hits}")
+        st.caption(f"Ventana usada para el sentimiento: {used_scope}")
 
-            # # Precio base: último observado del tramo mostrado (para fallback)
-            last_series = price_window.dropna(subset=["price"]).sort_values("datetime")
-            base_ref = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
+    # --- Señal final (Global) basada en predicción t+1 ---
+    last_series = price_window.dropna(subset=["price"])
+    last_price = float(last_series.iloc[-1]["price"]) if not last_series.empty else None
+    last_seen_ts = last_series["datetime"].max() if not last_series.empty else None
+    
+    target_ts_g = None
+    if last_seen_ts is not None:
+        target_ts_g = last_seen_ts + pd.Timedelta(hours=price_horizon_hours)
 
-            # --- Ejecutar predicción dinámica SOLO si el usuario presiona el botón ---
-            dyn_result = st.session_state.get("__dyn_reg_result__")
-            price_result_reg = st.session_state.get("__dyn_reg_price_result__")
+    # Cargar predicciones
+    if interval == "1h":
+        rf_path = PRED_RF_1H_PATH
+    else:
+        rf_path = PRED_RF_4H_PATH
+    
+    rf_df_sig = load_prediction_csv(str(rf_path), "y_pred")
+    ar_df_sig = pd.DataFrame()  # aún no tienes ARIMA global
 
-            if run_pred and target_ts is not None:
-                target_ts_price = target_ts + pd.Timedelta(hours=price_horizon_hours)
+    # --- Inicializar SIEMPRE para evitar UnboundLocalError en debug ---
+    dyn_pred_class = None
+    dyn_conf = None
+    pred_used = None
 
-                with st.spinner("Ejecutando predicción dinámica (Fusion: sentimiento + precio)…"):
-                    fused = _run_fused_predict_cached(
-                        target_ts_sent_str=str(target_ts),
-                        target_ts_price_str=str(target_ts_price),
-                        resolution=interval,      # 1h/4h/24h (lo que elijas en granularidad)
-                        mode="auto",
-                        window_hours=24,
-                        sentiment_model_name="xgb_clf",   # deja que el backend elija defaults
-                        price_model_name="xgb_price",
-                    )
+    pred_rf = None
+    pred_rf_proba = None
 
-                # Guardar en session_state como antes
-                st.session_state["__dyn_reg_result__"] = fused.get("sentiment")
-                st.session_state["__dyn_reg_price_result__"] = fused.get("price")
+    # --- Buscar predicción precomputada (CSV) ---
+    if target_ts_g is not None and not rf_df_sig.empty and "datetime" in rf_df_sig.columns:
+        row = rf_df_sig[rf_df_sig["datetime"] == target_ts_g]
+        if row.empty:
+            nearest = _nearest_row_by_ts(rf_df_sig, target_ts_g)
+            if nearest is not None:
+                pred_rf = nearest.get("y_pred", None)
+                pred_rf_proba = nearest.get("proba_up", None)
+        else:
+            pred_rf = row["y_pred"].iloc[0] if "y_pred" in row.columns else None
+            pred_rf_proba = row["proba_up"].iloc[0] if "proba_up" in row.columns else None
 
-                # Feedback opcional
-                if debug_mode:
-                    with st.expander("Fusion result (debug)", expanded=False):
-                        st.write(fused)
-
-            # ====================== BLOQUE FINAL REGÍMENES (ORDEN: Sentimiento -> Precio -> Señal final) ======================
-
-            # 1) Derivar etiqueta de sentimiento desde dyn_result (aquí no usamos news_window)
-            sentiment_label_reg = "Neutral"
-            sent_conf = None
-
-            if isinstance(dyn_result, dict):
-                pred_class = dyn_result.get("prediction", None)
-                sent_conf = dyn_result.get("confidence", None)
-                if pred_class == 1:
-                    sentiment_label_reg = "Positivo"
-                elif pred_class == 0:
-                    sentiment_label_reg = "Negativo"
-
-            # Mostrar el bloque de "Predicción técnica (precio)" usando el helper que ya tienes
-            price_result_reg = st.session_state.get("__dyn_reg_price_result__")
-            render_price_block(price_result_reg, horizon_label=price_horizon, debug_mode=debug_mode)
-
-            # 2) Construir señal final combinada (Precio + Sentimiento)
-            price_cls = None
-            price_conf = None
-            if isinstance(price_result_reg, dict):
-                price_cls = price_result_reg.get("prediction", None)
-                price_conf = price_result_reg.get("confidence", None)
-
-            final_label, final_color = combine_final_signal(price_cls, sentiment_label_reg)
-
-            # 3) Confianza final: prioriza precio si existe, si no sentimiento, si no 50%
-            final_conf = price_conf if price_conf is not None else sent_conf
-            try:
-                prog = int(max(0, min(100, float(final_conf) * 100))) if final_conf is not None else 50
-            except Exception:
-                prog = 50
-
-            # 4) Mostrar Señal final (COMBINADA)
-            st.subheader("Señal final")
-            st.markdown(
-                f"<h3 style='color:{final_color}; margin:0'>{final_label}</h3>",
-                unsafe_allow_html=True
+    # --- Predicción dinámica si el usuario presiona el botón ---
+    dyn_pred_class = None
+    dyn_conf = None
+    if run_pred and target_ts_g is not None:
+        target_ts_price = last_seen_ts + pd.Timedelta(hours=price_horizon_hours)
+        with st.spinner("Ejecutando predicción dinámica (Fusion: sentimiento + precio)…"):
+            fused = _run_fused_predict_cached(
+                target_ts_sent_str=str(target_ts_g),
+                target_ts_price_str=str(target_ts_price),
+                resolution=interval,      # 1h/4h/24h (lo que elijas en granularidad)
+                mode="auto",
+                window_hours=24,
+                sentiment_model_name="xgb_clf",   # deja que el backend elija defaults
+                price_model_name="xgb_price",
             )
-            st.progress(prog)
 
-            # Debug opcional
-            if debug_mode:
-                with st.expander("Detalles técnicos (debug)", expanded=False):
-                    st.write({
-                        "regime": regime,
-                        "target_ts": str(target_ts),
-                        "sentiment_label_reg": sentiment_label_reg,
-                        "price_prediction": price_cls,
-                        "final_label": final_label,
-                        "dyn_sent_result": dyn_result,
-                        "dyn_price_result": price_result_reg,
-                    })          
+        # Guardar en session_state como antes
+        st.session_state["__dyn_global_result__"] = fused.get("sentiment")
+        st.session_state["__dyn_global_price_result__"] = fused.get("price")
+
+        # Debug
+        if debug_mode:
+            with st.expander("Fusion result (debug)", expanded=False):
+                st.write(fused)
+    
+    # ====================== BLOQUE FINAL GLOBAL (ORDEN: Sentimiento -> Precio -> Señal final) ======================
+    # 1) Predicción técnica de PRECIO (ya la guardaste cuando run_pred)
+    price_result = st.session_state.get("__dyn_global_price_result__")
+    # Mostrar bloque de precio (t+interval o el horizon que uses)
+    with col_prediction:
+        render_price_block(price_result, horizon_label=interval, debug_mode=debug_mode)
+    # 2) Construir señal final combinada (Precio + Sentimiento)
+    price_cls = None
+    price_conf = None
+    if isinstance(price_result, dict):
+        price_cls = price_result.get("prediction")
+        price_conf = price_result.get("confidence")
+    # sentiment_label ya existe en Global (Positivo/Negativo/Neutral) por tu cálculo con news
+    final_label, final_color = combine_final_signal(price_cls, sentiment_label)
+    # confianza final: prioriza precio si existe, si no usa la del modelo de sentimiento si existe, si no 50%
+    final_conf = price_conf if price_conf is not None else dyn_conf
+    try:
+        prob_final = int(max(0, min(100, float(final_conf) * 100))) if final_conf is not None else 50
+    except Exception:
+        prob_final = 50
+    # 3) Mostrar Señal final (COMBINADA)
+    with col_final_signal:
+        st.subheader("Señal final")
+        st.markdown(f"<h3 style='color:{final_color}; margin:0'>{final_label}</h3>", unsafe_allow_html=True)
+        st.progress(prob_final)
+
+    # Debug opcional
+    if debug_mode:
+        with st.expander("Detalles técnicos (debug)", expanded=False):
+            st.write({
+                "sentiment_label": sentiment_label,
+                "price_prediction": price_cls,
+                "price_conf": price_conf,
+                "dyn_sent_prediction": dyn_pred_class,
+                "dyn_sent_conf": dyn_conf,
+                "final_label": final_label
+            })          
 
     st.divider()
 
     # ------------------ Tabs ------------------
-    tab_signal, tab_context, tab_method, tab_details = st.tabs(["Señal & Predicción", "Contexto", "Metodología", "Detalles"])
+    tab_prediction, tab_filtered_news, tab_details = st.tabs(["Predicción", "Noticias filtradas", "Detalles"])
 
     # --------- Tab Contexto ---------
-    with tab_context:
-        st.subheader("Noticias filtradas")
-        if mode == "Global":
-            st.caption(f"Registros: {len(news_window)}")
-            st.caption("💡 La señal resume el sentimiento de las noticias más recientes dentro del rango elegido.")
-            if not news_window.empty:
-                st.dataframe(news_window[["published_at", "source", "axis", "title"]].head(200), width='stretch')
-                csv_bytes = news_window.to_csv(index=False).encode("utf-8")
-                st.download_button("Descargar CSV", csv_bytes, "news_filtered.csv", "text/csv")
-            else:
-                st.info("No hay noticias para mostrar en el rango.")
+    with tab_filtered_news:
+        st.caption(f"Registros: {len(news_window)}")
+        st.caption("💡 La señal resume el sentimiento de las noticias más recientes dentro del rango elegido.")
+        if not news_window.empty:
+            st.dataframe(news_window[["published_at", "source", "axis", "title"]].head(200), width='stretch')
+            csv_bytes = news_window.to_csv(index=False).encode("utf-8")
+            st.download_button("Descargar CSV", csv_bytes, "news_filtered.csv", "text/csv")
         else:
-            st.info("En modo Regímenes, el contexto de noticias no se muestra aquí (se usa predicción dinámica bajo demanda).")
-
+            st.info("No hay noticias para mostrar en el rango.")
     # --------- Tab Señal & Predicción ---------
-    with tab_signal:
-        st.subheader("Predicción")
-        st.caption("Sentimiento y Precio: RF/XGB (clasificación)")
-
+    with tab_prediction:
+        st.caption("Sentimiento (Random Forest Clasificador)  +  Precio (XGBoost Clasificador)")
         # Carga flexible según granularidad
         # --- Sentiment (precomputado) ---
         rf_df  = load_pred_if_exists("rf_clf", interval, "y_pred")
@@ -1202,240 +878,78 @@ def render_dashboard():
         if not pred_price_df.empty:
             pred_price_df = pred_price_df.sort_values("datetime")
     
-
-
-        if mode == "Regímenes (Halvings)":
-            target_ts = st.session_state.get("__regime_target_ts__")
-            regime    = st.session_state.get("__regime_name__")
-
-            st.caption(f"Régimen: {regime}. Predicción dinámica disponible al pulsar 🚀 Ejecutar Predicción.")
-
-            # Mostrar resultados dinámicos guardados (si existen)
-            dyn_sent = st.session_state.get("__dyn_reg_result__")
-            dyn_price = st.session_state.get("__dyn_reg_price_result__")
-
-            # 1) Mostrar resultado dinámico si existe (guardado por el panel Regímenes)
-
-            def _pretty_dyn(d: dict, label: str):
-                """Devuelve un dict corto y 'lindo' para mostrar."""
-                if not isinstance(d, dict):
-                    return None
-                pred = d.get("prediction", None)
-                pred_lbl = None
-                if pred in (0, 1):
-                    pred_lbl = "SUBIDA" if int(pred) == 1 else "BAJADA"
-
-                return {
-                    "tipo": label,
-                    "prediction": pred_lbl,
-                    "confidence": d.get("confidence", None),
-                    "proba_up": d.get("proba_up", None),
-                    "mode_used": d.get("mode_used", None),
-                    "model": d.get("model", None),
-                    "resolution": d.get("resolution", None),
-                    "datetime": d.get("datetime", None),
-                    "msg": d.get("msg", None),
-                }
-
-            st.markdown("### 🔥 Predicción dinámica")
-
-            c1, c2 = st.columns(2)
-
-            with c1:
-                st.write("**Sentimiento**")
-                if isinstance(dyn_sent, dict) and dyn_sent.get("prediction") is not None:
-                    st.write(_pretty_dyn(dyn_sent, "sentiment"))
-                else:
-                    st.info("Aún no hay predicción dinámica de sentimiento. Pulsa 🚀 en el sidebar para generarla.")
-
-            with c2:
-                st.write("**Precio**")
-                if isinstance(dyn_price, dict) and dyn_price.get("prediction") is not None:
-                    st.write(_pretty_dyn(dyn_price, "price"))
-                else:
-                    st.info("Aún no hay predicción dinámica de precio. Pulsa 🚀 en el sidebar para generarla.")
-
-            # Debug detallado opcional
-            if debug_mode:
-                with st.expander("Detalles completos (debug)", expanded=False):
-                    st.write({"dyn_sent_raw": dyn_sent, "dyn_price_raw": dyn_price})
-
-
-            # 2) Mostrar predicciones históricas precomputadas alrededor del target
-            if target_ts is None:
-                st.info("Selecciona una fecha objetivo para ver predicciones cercanas.")
-            else:
-                lo, hi = target_ts - pd.Timedelta(days=7), target_ts + pd.Timedelta(days=7)
-
-                rf_win  = rf_df[(rf_df["datetime"] >= lo) & (rf_df["datetime"] <= hi)].copy() if not rf_df.empty else pd.DataFrame()
-                xgb_win = xgb_df[(xgb_df["datetime"] >= lo) & (xgb_df["datetime"] <= hi)].copy() if not xgb_df.empty else pd.DataFrame()
-
-                st.markdown("### 📄 Predicciones históricas (CSV) — ventana ±7 días")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.write("RF (clasificación)")
-                    if not rf_win.empty:
-                        st.dataframe(rf_win.head(80), width="stretch")
-                    else:
-                        st.info("No hay datos RF en la ventana seleccionada.")
-                with c2:
-                    st.write("XGB (clasificación)")
-                    if not xgb_win.empty:
-                        st.dataframe(xgb_win.head(80), width="stretch")
-                    else:
-                        st.info("No hay datos XGB en la ventana seleccionada.")
+        if rf_df.empty and xgb_df.empty:
+            st.info("Aún no hay CSVs de predicción de sentimiento en data/processed/.")
+        if rfp_df.empty and xgbp_df.empty:
+            st.info(f"No hay CSVs de predicción de PRECIO para {interval} en data/processed/.")
 
         else:
-            # ---------- Global ----------
-            if rf_df.empty and xgb_df.empty:
-                st.info("Aún no hay CSVs de predicción de sentimiento en data/processed/.")
-            if rfp_df.empty and xgbp_df.empty:
-                st.info(f"No hay CSVs de predicción de PRECIO para {interval} en data/processed/.")
-
+            # Merge sentiment
+            pred_sent_df = pd.DataFrame()
+            if not rf_df.empty and not xgb_df.empty:
+                pred_sent_df = pd.merge(rf_df, xgb_df, on="datetime", how="outer")
             else:
-                # Merge sentiment
-                pred_sent_df = pd.DataFrame()
-                if not rf_df.empty and not xgb_df.empty:
-                    pred_sent_df = pd.merge(rf_df, xgb_df, on="datetime", how="outer")
-                else:
-                    pred_sent_df = rf_df if not rf_df.empty else xgb_df
+                pred_sent_df = rf_df if not rf_df.empty else xgb_df
 
-                if not pred_sent_df.empty:
-                    pred_sent_df = pred_sent_df.sort_values("datetime")
+            if not pred_sent_df.empty:
+                pred_sent_df = pred_sent_df.sort_values("datetime")
 
-                # Merge price
-                pred_price_df = pd.DataFrame()
-                if not rfp_df.empty and not xgbp_df.empty:
-                    pred_price_df = pd.merge(rfp_df, xgbp_df, on="datetime", how="outer")
-                else:
-                    pred_price_df = rfp_df if not rfp_df.empty else xgbp_df
+            # Merge price
+            pred_price_df = pd.DataFrame()
+            if not rfp_df.empty and not xgbp_df.empty:
+                pred_price_df = pd.merge(rfp_df, xgbp_df, on="datetime", how="outer")
+            else:
+                pred_price_df = rfp_df if not rfp_df.empty else xgbp_df
 
-                if not pred_price_df.empty:
-                    pred_price_df = pred_price_df.sort_values("datetime")
+            if not pred_price_df.empty:
+                pred_price_df = pred_price_df.sort_values("datetime")
 
+            # Ventana sentimiento (solo si existe datetime)
+            if (pred_sent_df is None) or pred_sent_df.empty or ("datetime" not in pred_sent_df.columns):
+                pred_window = pd.DataFrame()
+            else:
+                pred_window = pred_sent_df[
+                    (pred_sent_df["datetime"] >= start_ts) & (pred_sent_df["datetime"] <= end_ts)
+                ].copy()
+
+                # Heatmap
+                st.markdown("### Predicciones (visualización)")
+                heat_df = pred_window.copy()
+                heat_df = heat_df[["datetime", "y_pred_rf", "y_pred_xgb"]].melt(
+                    id_vars="datetime",
+                    var_name="model",
+                    value_name="pred"
+                ).dropna()
+                heat = alt.Chart(heat_df).mark_rect().encode(
+                    x=alt.X("yearmonthdate(datetime):T", title="Día"),
+                    y=alt.Y("model:N", title="Modelo"),
+                    color=alt.Color(
+                        "mean(pred):Q",
+                        scale=alt.Scale(domain=[0, 1], range=["#b91e0d", "#22a884"]),
+                        legend=alt.Legend(title="Pred (promedio)")
+                    ),
+                    tooltip=[
+                        alt.Tooltip("yearmonthdate(datetime):T", title="Día"),
+                        alt.Tooltip("model:N", title="Modelo"),
+                        alt.Tooltip("mean(pred):Q", title="Promedio", format=".2f")
+                    ]
+                ).properties(height=120)
+                st.altair_chart(heat, use_container_width=True)
+
+                # Table
+                st.markdown("### Predicciones (datos tabulados)")
+                st.dataframe(pred_window.head(200), width='stretch')
+                csv_bytes = pred_window.to_csv(index=False).encode("utf-8")
+                st.download_button("Descargar predicciones (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv")
                 
-                # Ventana sentimiento (solo si existe datetime)
-                if (pred_sent_df is None) or pred_sent_df.empty or ("datetime" not in pred_sent_df.columns):
-                    pred_window = pd.DataFrame()
-                else:
-                    pred_window = pred_sent_df[
-                        (pred_sent_df["datetime"] >= start_ts) & (pred_sent_df["datetime"] <= end_ts)
-                    ].copy()
-
-                if pred_window.empty:
-                    st.warning("Hay predicciones, pero no hay registros dentro del rango de fechas seleccionado.")
-                else:
-                    st.markdown(f"### ⏭️ Predicción — siguiente {interval} (+{horizon_hours}h)")
-
-                    last_series = price_window.dropna(subset=["price"])
-                    if last_series.empty:
-                        st.info("No hay precio disponible para calcular el datetime objetivo (t+1).")
-                    else:
-                        last_seen_ts = last_series["datetime"].max()
-                        target_ts_g  = last_seen_ts + pd.Timedelta(hours=horizon_hours)
-                        st.caption(f"Base (último dato): {last_seen_ts:%Y-%m-%d %H:%M} UTC → Objetivo: {target_ts_g:%Y-%m-%d %H:%M} UTC")
-
-                        row_next = pred_window[pred_window["datetime"] == target_ts_g]
-                        if row_next.empty:
-                            st.info(f"Aún no existe una fila de predicción exactamente para el siguiente {interval} (t+1).")
-                        else:
-                            rf_val  = row_next["y_pred_rf"].iloc[0] if "y_pred_rf" in row_next.columns else None
-                            xgb_val = row_next["y_pred_xgb"].iloc[0] if "y_pred_xgb" in row_next.columns else None
-
-                            # Mostrar como clase (SUBIDA/BAJADA), no como número flotante
-                            def _cls_label(v):
-                                if v is None or pd.isna(v): return "N/A"
-                                return "SUBIDA" if int(v) == 1 else "BAJADA"
-
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("t+1 datetime", f"{target_ts_g:%Y-%m-%d %H:%M} UTC")
-                            c2.metric("RF pred (t+1)", _cls_label(rf_val))
-                            c3.metric("XGB pred (t+1)", _cls_label(xgb_val))
-
-                            # Consenso (ambos son 0/1)
-                            directions = []
-                            if rf_val is not None and pd.notna(rf_val):
-                                directions.append(int(rf_val))
-                            if xgb_val is not None and pd.notna(xgb_val):
-                                directions.append(int(xgb_val))
-
-                            if len(directions) == 2 and directions[0] == directions[1]:
-                                st.success("✅ Ambos modelos coinciden en la dirección (mayor confianza).")
-                            elif len(directions) == 2 and directions[0] != directions[1]:
-                                st.warning("⚠️ Los modelos discrepan en dirección (señal mixta).")
-                            else:
-                                st.info("ℹ️ Solo hay salida de un modelo disponible por ahora.")
-
-                    # Plot & table (clasificación + y_true si existe)
-                    st.markdown("### 📈 Observed vs Predicted (clasificación)")
-                    plot_df = pred_window.set_index("datetime")
-                    cols = []
-                    if "y_true" in plot_df.columns: cols.append("y_true")
-                    if "y_pred_rf" in plot_df.columns: cols.append("y_pred_rf")
-                    if "y_pred_xgb" in plot_df.columns: cols.append("y_pred_xgb")
-                    if cols:
-                        st.line_chart(plot_df[cols])
-                    else:
-                        st.info("No se encontraron columnas de predicción para graficar.")
-
-                    st.markdown("### 📄 Predicciones (tabla)")
-                    st.dataframe(pred_window.head(200), width='stretch')
-                    csv_bytes = pred_window.to_csv(index=False).encode("utf-8")
-                    st.download_button("Descargar predicciones (CSV)", csv_bytes, "predictions_filtered.csv", "text/csv")
-
-
-    # --------- Tab Methodología (EDA) ---------
-    with tab_method:
-        st.subheader("Metodología (resumen)")
-        df = price_window.dropna(subset=["price"]).copy().sort_values("datetime")
-
-        if df.empty or "datetime" not in df.columns or "price" not in df.columns:
-            st.info("No hay datos suficientes para mostrar metodología en el rango/regimen.")
-        else:
-            s = df.set_index("datetime")["price"].astype(float)
-            st.markdown("### Serie de precio")
-            st.line_chart(s)
-
-            st.markdown("### Retornos (log) y volatilidad")
-            log_s = s.apply(lambda x: math.log(x) if x > 0 else float("nan"))
-            rets = log_s.diff().dropna()
-            st.caption("Retornos log (%)")
-            st.line_chart((rets * 100).rename("log_return_%"))
-            st.caption("Volatilidad rolling (24 pasos) sobre retornos log (√24).")
-            vol = rets.rolling(24).std() * (24 ** 0.5)
-            st.line_chart(vol.dropna().rename("vol_24"))
-
-            # EDA de Sentimiento solo en Global
-            if mode == "Global" and not news_window.empty:
-                st.divider()
-                st.markdown("### EDA de Sentimiento (Global)")
-                if "sentiment_score" in news_window.columns:
-                    snt = pd.to_numeric(news_window["sentiment_score"], errors="coerce").dropna()
-                    st.write({
-                        "mean": float(snt.mean()),
-                        "median": float(snt.median()),
-                        "std": float(snt.std()),
-                        "pos(>0.05)": int((snt > 0.05).sum()),
-                        "neg(<-0.05)": int((snt < -0.05).sum()),
-                        "n": int(len(snt)),
-                    })
-                else:
-                    st.info("No se encontró columna 'sentiment_score' en noticias.")
-
-            st.divider()
-            st.markdown("### Hallazgos (resumen)")
-            st.write(
-                "- La serie de precio requiere diferenciación (d≈1) para estacionariedad.\n"
-                "- Estacionalidad débil; ARIMA/SARIMA es baseline razonable.\n"
-                "- En modo Regímenes, cada modelo se entrena con su subperiodo (estacionalidad no compartida)."
-            )
+                cols = ["datetime", "y_pred_rf", "y_pred_xgb"]
 
     # --------- Tab Detalles ---------
     with tab_details:
         st.subheader("Resumen de datos")
         fuente = "raw" if "raw" in str(price_path).lower() else "processed"
-        rows_news = int(len(news_window)) if mode == "Global" else 0
-        sources = int(news_window["source"].nunique()) if (mode == "Global" and not news_window.empty and "source" in news_window.columns) else 0
+        rows_news = int(len(news_window))
+        sources = int(news_window["source"].nunique()) if (not news_window.empty and "source" in news_window.columns) else 0
 
         st.write({
             "fuente": fuente,
@@ -1448,7 +962,7 @@ def render_dashboard():
 manual = st.session_state.get("nav_manual_select", None)
 selected = option_menu(
     menu_title=None,
-    options=["Home", "Dashboard", "Overview", "Recomendaciones"],
+    options=["Home", "Dashboard", "Overview"],
     icons=["house", "graph-up", "card-text", "lightbulb"],
     default_index=0 if manual is None else manual,
     orientation="horizontal",
@@ -1474,6 +988,4 @@ elif selected == "Overview":
     render_overview()
 elif selected == "Dashboard":
     render_dashboard()
-elif selected == "Recomendaciones":
-    render_recommendations()
 
